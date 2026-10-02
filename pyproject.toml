@@ -20,7 +20,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-# warpxmlfile is added here once it is published (it is installed from its git repository until then).
+# warpxmlfile is installed from its git repository until it is published on PyPI.
 dependencies = [
     "numpy",
     "scipy",
@@ -31,6 +31,7 @@ dependencies = [
     "starfile>=0.5.13",
     "imodmodel>=0.1.0",
     "threadpoolctl",
+    "warpxmlfile @ git+https://github.com/jtcarrion/warpxmlfile.git",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +41,9 @@ dev = ["jolt-cryoet[tests,docs]", "pre-commit", "ruff", "codespell"]
 
 [project.scripts]
 jolt = "jolt.__main__:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.version]
 source = "vcs"
