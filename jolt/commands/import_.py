@@ -77,9 +77,87 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
     return parser
 
 
+def _check_picks(path, n_tilts: int) -> int:
+    """Check that a 2D pick STAR file names tilt images by a stack index within range; return its pick count."""
+    from jolt.io import read_star_table
+    from jolt.pipeline import tilt_index_from_name
+
+    table = read_star_table(path, required=["rlnMicrographName", "rlnCoordinateX", "rlnCoordinateY"])
+    for name in table["rlnMicrographName"].astype(str).unique():
+        idx = tilt_index_from_name(name)
+        if not 1 <= idx <= n_tilts:
+            raise ValueError(f"{path}: tilt image {name!r} has index {idx}, outside 1..{n_tilts}")
+    return len(table)
+
+
 def main(args: argparse.Namespace) -> None:
     """Run ``jolt import``."""
-    raise NotImplementedError("`jolt import` is not ported yet.")
+    from pathlib import Path
+
+    from jolt.io import config, read_header_dims, warp
+    from jolt.utils import parse_name_list
+
+    project_dir = Path(args.project_dir)
+    if config.config_path(project_dir).exists() and not args.overwrite:
+        raise SystemExit(f"{config.config_path(project_dir)} already exists; pass --overwrite to replace it")
+    warp_dir = Path(args.warp_dir).resolve()
+    tomo_x, tomo_y, tomo_z = args.tomo_dims_xyz
+    series = warp.discover(warp_dir, args.xml_path, args.tiltstack_path, parse_name_list(args.ts))
+
+    problems, entries = [], {}
+    for ts in series:
+        entry = {
+            "xml": str(ts.xml),
+            "raw_stack": str(ts.raw_stack),
+            "aligned_stack": str(ts.aligned_stack) if ts.aligned_stack else None,
+            "xf": str(ts.xf),
+            "tlt": str(ts.tlt),
+            "n_tilts": ts.n_tilts,
+            "raw_dims_xy": list(ts.raw_dims_xy),
+            "pixel_size": ts.pixel_size,
+        }
+        if len(set(ts.tilt_angles)) != len(ts.tilt_angles):
+            problems.append(f"{ts.name}: the .tlt lists the same tilt angle more than once")
+        if ts.aligned_stack is not None:
+            ax, ay, _ = read_header_dims(ts.aligned_stack)
+            if (ax, ay) != (tomo_x, tomo_y):
+                problems.append(
+                    f"{ts.name}: --tomo_dims_xyz X,Y = {tomo_x},{tomo_y} but the aligned stack "
+                    f"{ts.aligned_stack.name} is {ax} x {ay}; X,Y must be the aligned tilt-image size"
+                )
+        if args.picks_2d:
+            pattern = Path(args.picks_2d.replace("{ts}", ts.name))
+            picks = pattern if pattern.is_absolute() else warp_dir / pattern
+            if not picks.is_file():
+                problems.append(f"{ts.name}: 2D picks not found: {picks}")
+            else:
+                try:
+                    _check_picks(picks, ts.n_tilts)
+                    entry["picks_2d"] = str(picks)
+                    entry["picks_frame"] = args.picks_frame
+                except (ValueError, KeyError) as exc:
+                    problems.append(str(exc))
+        for warning in ts.warnings:
+            print(f"WARNING: {warning}")
+        entries[ts.name] = entry
+    if problems:
+        raise SystemExit(f"{len(problems)} problem(s) found; nothing was written:\n  " + "\n  ".join(problems))
+
+    xml_path, tiltstack_path = warp.default_paths(warp_dir)
+    cfg = {
+        "config_version": config.CONFIG_VERSION,
+        "project": {
+            "warp_dir": str(warp_dir),
+            "xml_path": str(Path(args.xml_path).resolve()) if args.xml_path else str(xml_path),
+            "tiltstack_path": str(Path(args.tiltstack_path).resolve()) if args.tiltstack_path else str(tiltstack_path),
+            "tomo_dims_xyz": [int(tomo_x), int(tomo_y), int(tomo_z)],
+        },
+        "tilt_series": entries,
+    }
+    config.record_command(cfg, "import", {k: v for k, v in vars(args).items() if k != "func"})
+    path = config.save(project_dir, cfg)
+    n_picks = sum(1 for e in entries.values() if "picks_2d" in e)
+    print(f"{len(entries)} tilt series imported ({n_picks} with 2D picks); configuration written to {path}")
 
 
 if __name__ == "__main__":

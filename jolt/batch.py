@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import sys
 import time
 import traceback
 from collections.abc import Callable
@@ -95,12 +96,17 @@ def run_tasks(
     counter = context.Value("i", 0)
     outcomes = []
     t0 = time.time()
+    options = {}
+    # Python 3.10 has no max_tasks_per_child; kept working there so the regression harness can run the port in
+    # the original (Python 3.10) environment.
+    if sys.version_info >= (3, 11):  # noqa: UP036
+        options["max_tasks_per_child"] = 1  # a fresh process (and CUDA context) per tilt series
     with ProcessPoolExecutor(
         max_workers=min(n_jobs, len(tasks)),
         mp_context=context,
         initializer=_init_worker,
         initargs=(counter, list(gpus), int(worker_threads)),
-        max_tasks_per_child=1,
+        **options,
     ) as pool:
         futures = {pool.submit(_run_task, task): task.name for task in tasks}
         for future in as_completed(futures):

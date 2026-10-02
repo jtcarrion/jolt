@@ -340,3 +340,25 @@ def run_tilt_series(
         json.dump(status, handle, indent=2, default=float)
     log(f"[{inputs.name}] {len(table)} particles written to {out} ({status['seconds']} s)")
     return status
+
+
+def run_tilt_series_logged(inputs: TiltSeriesInputs, output_dir: str, settings: JointOptimizeSettings) -> dict:
+    """Run :func:`run_tilt_series` in a worker process, logging to ``<output_dir>/joint_optimize.log``.
+
+    Returns a short summary (status of each stage and the particle count).
+    """
+    from jolt.utils import FileLog
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    log_path = out / "joint_optimize.log"
+    if log_path.exists():
+        log_path.unlink()
+    status = run_tilt_series(inputs, out, settings, log=FileLog(log_path, echo=False))
+    return {
+        "ba_status": status["ba"]["status"],
+        "ba_error": status["ba"].get("error"),
+        "fom_status": status.get("fom", {}).get("status"),
+        "n_particles": status["n_particles"],
+        "seconds": status["seconds"],
+    }
