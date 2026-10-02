@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jolt-cryoet"
+dynamic = ["version"]
+description = "3D particle picking from 2D tilt-image picks with joint tilt-series alignment refinement for cryo-ET"
+readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.11,<3.14"
+authors = [{ name = "Jackson Carrion" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+# warpxmlfile is added here once it is published (it is installed from its git repository until then).
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "torch>=2.3",
+    "pyyaml",
+    "mrcfile",
+    "starfile>=0.5.13",
+    "imodmodel>=0.1.0",
+    "threadpoolctl",
+]
+
+[project.optional-dependencies]
+tests = ["pytest"]
+docs = ["sphinx", "pydata-sphinx-theme", "sphinx-argparse", "sphinx-copybutton"]
+dev = ["jolt-cryoet[tests,docs]", "pre-commit", "ruff", "codespell"]
+
+[project.scripts]
+jolt = "jolt.__main__:main"
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0"
+
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"
+
+[tool.hatch.build.targets.wheel]
+packages = ["jolt"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, pyupgrade, bugbear, pydocstyle (numpy convention)
+select = ["E", "F", "W", "I", "UP", "B", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+"benchmarks/**" = ["D"]
+"docs/**" = ["D"]
+
+[tool.codespell]
+# "en-GB_to_en-US" flags British spellings: JOLT uses US English everywhere.
+builtin = "clear,rare,en-GB_to_en-US"
+ignore-words-list = "fom,sav"
+skip = "./LICENSE,./tests/data,./docs/_build,*.star,*.xml"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

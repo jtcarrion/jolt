@@ -1,0 +1,39 @@
+# Conda environment for JOLT.
+#
+# Everything comes from conda-forge so that numpy/scipy and PyTorch share ONE OpenMP runtime
+# (llvm-openmp). Mixing runtimes (e.g. a pip PyTorch wheel bundling libgomp next to MKL's libomp)
+# produced silently wrong results under multithreading on some GPU nodes.
+#
+# Create and install (from the repository root):
+#   CONDA_OVERRIDE_CUDA=12.4 conda env create -f environment.yml -p <prefix>
+#   conda activate <prefix>
+#   pip install -e /path/to/warpxmlfile     # until warpxmlfile is published
+#   pip install --no-deps -e .
+# CONDA_OVERRIDE_CUDA is only needed when building on a machine without a GPU (e.g. a login node);
+# set it to the CUDA version the GPU nodes' driver supports.
+name: jolt
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pytorch-gpu>=2.3
+  - numpy
+  - scipy
+  - pandas
+  - pyyaml
+  - mrcfile
+  - threadpoolctl
+  - pip
+  # development tools
+  - pytest
+  - ruff
+  - codespell
+  - pre-commit
+  # documentation
+  - sphinx
+  - pydata-sphinx-theme
+  - sphinx-argparse
+  - sphinx-copybutton
+  - pip:
+      - starfile>=0.5.13
+      - imodmodel>=0.1.0
