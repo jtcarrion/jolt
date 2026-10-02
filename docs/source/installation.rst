@@ -11,7 +11,6 @@ a single OpenMP runtime.
    cd jolt
    CONDA_OVERRIDE_CUDA=12.4 conda env create -f environment.yml -p <prefix>
    conda activate <prefix>
-   pip install -e /path/to/warpxmlfile
    pip install --no-deps -e .
    jolt --help
 

@@ -1,5 +1,9 @@
 # JOLT release notes
 
 ## Unreleased
+- Port of the original JOLT pipeline: `import`, `finetune`, `detect_2d`, `joint_optimize` and `filter` are
+  implemented. MLESAC initialization, greedy bundle adjustment of particles and per-tilt shifts, the top-5
+  figure of merit with the detector score, residual/border/duplicate selection, refined `.xf` output.
+  Run in the original environment the port reproduces the CZI reference runs exactly.
 - Package skeleton: `jolt` command with `import`, `finetune`, `detect_2d`, `joint_optimize` and `filter`
   (documented, not implemented yet), test case `tests/data/czi_TS_5`, documentation, tests and CI.
