@@ -1,0 +1,5 @@
+# JOLT release notes
+
+## Unreleased
+- Package skeleton: `jolt` command with `import`, `finetune`, `detect_2d`, `joint_optimize` and `filter`
+  (documented, not implemented yet), test case `tests/data/czi_TS_5`, documentation, tests and CI.

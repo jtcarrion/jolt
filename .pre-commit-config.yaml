@@ -1,0 +1,30 @@
+# Test data are byte-identical copies of the originals: hooks must never rewrite them.
+exclude: "^tests/data/"
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.10
+    hooks:
+      - id: ruff-check
+        args: ["--fix"]
+      - id: ruff-format
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
+    hooks:
+      - id: codespell
+        additional_dependencies: ["tomli"]
+  - repo: local
+    hooks:
+      - id: no-cluster-paths
+        name: no cluster-specific paths
+        language: pygrep
+        entry: "/orcd/"
+        exclude: "^\\.pre-commit-config\\.yaml$"
