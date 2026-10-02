@@ -15,6 +15,7 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import starfile
 from scipy.spatial import cKDTree
 
@@ -29,7 +30,7 @@ def _read_points(star_path):
     extra = {
         k: df[c].to_numpy(float)
         for k, c in cols.items()
-        if k not in ("rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ") and np.issubdtype(df[c].dtype, np.number)
+        if k not in ("rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ") and pd.api.types.is_numeric_dtype(df[c])
     }
     return xyz, fom, extra
 
@@ -47,9 +48,10 @@ def _col_diff(a, b):
     return float(np.max(np.abs(a[~na] - b[~nb]))) if (~na).any() else 0.0
 
 
-def compare_ts(new_dir, ref_dir, ts, decimals, extra_cols=()):
+def compare_ts(new_dir, ref_dir, ts, decimals, extra_cols=(), new_star_name=None, new_xf_name=None):
     r = {"ts": ts}
-    new_star, ref_star = new_dir / "BA_residual_filtered_3d.star", ref_dir / "BA_residual_filtered_3d.star"
+    new_star = new_dir / (new_star_name or "BA_residual_filtered_3d.star").replace("{ts}", ts)
+    ref_star = ref_dir / "BA_residual_filtered_3d.star"
     if not new_star.exists() or not ref_star.exists():
         r["status"] = f"missing star (new={new_star.exists()}, ref={ref_star.exists()})"
         return r
@@ -73,7 +75,8 @@ def compare_ts(new_dir, ref_dir, ts, decimals, extra_cols=()):
                 r[f"max_diff_{c}"] = f"absent (new={c in en}, ref={c in er})"
     for c in extra_cols:
         r.setdefault(f"present_{c}", c in en)
-    xf_new, xf_ref = new_dir / f"{ts}.xf", ref_dir / f"{ts}.xf"
+    xf_new = new_dir / (new_xf_name or "{ts}.xf").replace("{ts}", ts)
+    xf_ref = ref_dir / f"{ts}.xf"
     if xf_new.exists() and xf_ref.exists():
         a, b = _read_xf(xf_new), _read_xf(xf_ref)
         r["xf_max_abs_diff"] = float(np.max(np.abs(a - b))) if a.shape == b.shape else f"shape {a.shape} vs {b.shape}"
@@ -89,10 +92,14 @@ def main():
     p.add_argument("--decimals", type=int, default=2)
     p.add_argument("--cols", default="", help="extra numeric STAR columns to compare, comma-separated")
     p.add_argument("--out", type=Path, default=None)
+    p.add_argument(
+        "--new_star_name", default=None, help="particle STAR name in --new, {ts} is replaced (default: reference name)"
+    )
+    p.add_argument("--new_xf_name", default=None, help="refined .xf name in --new, {ts} is replaced (default: {ts}.xf)")
     a = p.parse_args()
     names = [t if t.startswith("TS_") else f"TS_{t}" for t in a.ts.split(",")]
     cols = [c for c in a.cols.split(",") if c]
-    rows = [compare_ts(a.new / t, a.ref / t, t, a.decimals, cols) for t in names]
+    rows = [compare_ts(a.new / t, a.ref / t, t, a.decimals, cols, a.new_star_name, a.new_xf_name) for t in names]
     all_same = all(r.get("coords_identical") for r in rows)
     print(f"{'TS':<7}{'n_new':>7}{'n_ref':>7}{'common':>8}{'same':>6}{'maxNN':>9}{'maxFOMd':>10}{'xf_maxd':>10}")
     for r in rows:

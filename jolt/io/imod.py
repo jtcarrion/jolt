@@ -106,3 +106,24 @@ def write_xf(path: str | PathLike, rows: list[dict]) -> None:
             a11, a12 = row.get("A11", 1.0), row.get("A12", 0.0)
             a21, a22 = row.get("A21", 0.0), row.get("A22", 1.0)
             handle.write(f"{a11:.7f}   {a12:.7f}   {a21:.7f}   {a22:.7f}      {dx:.7f}      {dy:.7f}\n")
+
+
+def write_points_mod(path: str | PathLike, points_xyz: np.ndarray) -> None:
+    """Write 3D points as one scattered-point object of an IMOD model (``.mod``) for viewing in ``3dmod``.
+
+    Parameters
+    ----------
+    path : str or path-like
+        Output ``.mod`` file.
+    points_xyz : numpy.ndarray
+        ``(N, 3)`` coordinates in tomogram pixels (the same values as the particle STAR file).
+    """
+    import imodmodel
+    import pandas as pd
+
+    pts = np.asarray(points_xyz, dtype=float).reshape(-1, 3)
+    frame = pd.DataFrame(
+        {"object_id": 0, "contour_id": 0, "x": pts[:, 0], "y": pts[:, 1], "z": pts[:, 2]},
+        index=range(len(pts)),
+    )
+    imodmodel.write(frame, path)
