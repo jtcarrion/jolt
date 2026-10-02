@@ -44,3 +44,22 @@ def test_projection_matrices_follow_the_tilt_model():
         assert uv[k, 0] == pytest.approx(np.cos(theta) * 10.0 + np.sin(theta) * 20.0, abs=1e-4)
         assert uv[k, 1] == pytest.approx(-5.0, abs=1e-5)
     np.testing.assert_allclose(geometry.project_y_axis(np.array([10.0, -5.0, 20.0]), 33.0), uv[2], atol=1e-4)
+
+
+def test_aligned_to_raw_inverts_raw_to_aligned():
+    row = {"A11": 0.98, "A12": -0.17, "A21": 0.17, "A22": 0.98, "DX": 3.5, "DY": -7.25}
+    raw = np.array([[100.0, 200.0, 0.0], [700.0, 50.0, 0.0]])
+    aligned = geometry.raw_picks_to_aligned(raw, row, (788, 560), (560, 788))
+    np.testing.assert_allclose(geometry.aligned_to_raw(aligned[:, :2], row, (788, 560), (560, 788)), raw[:, :2])
+
+
+def test_star_points_project_like_the_pipeline_frames():
+    # A particle in the STAR frame (y down) projects at 0 deg onto its own (x, y) in the aligned image.
+    row = {"A11": 1.0, "A12": 0.0, "A21": 0.0, "A22": 1.0, "DX": 0.0, "DY": 0.0}
+    xy = geometry.project_star_points_to_raw(np.array([[120.0, 40.0, 10.0]]), 0.0, row, (256, 256, 60), (256, 256))
+    np.testing.assert_allclose(xy, [[120.0, 40.0]], atol=1e-9)
+    # At 30 deg x moves by cos/sin of the centered x and z; y is unchanged.
+    xy = geometry.project_star_points_to_raw(np.array([[120.0, 40.0, 10.0]]), 30.0, row, (256, 256, 60), (256, 256))
+    t = np.deg2rad(30.0)
+    np.testing.assert_allclose(xy[0, 0], np.cos(t) * (120 - 127.5) + np.sin(t) * (10 - 29.5) + 127.5, atol=1e-9)
+    np.testing.assert_allclose(xy[0, 1], 40.0, atol=1e-9)

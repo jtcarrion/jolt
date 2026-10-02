@@ -216,3 +216,53 @@ def picks_to_center_tensor(picks: np.ndarray, image_dims_hw: tuple[int, int], de
     corner = np.asarray([[float(p[0]), float(p[1])] for p in picks], dtype=np.float32)
     center = corner_to_center_2d_bottom_left(corner, image_dims_hw).astype(np.float32)
     return torch.as_tensor(center, dtype=torch.float32, device=device)
+
+
+def aligned_to_raw(points_xy: np.ndarray, xf_row: dict, raw_dims_xy, aligned_dims_xy) -> np.ndarray:
+    """Inverse of :func:`raw_picks_to_aligned` for ``(N, 2)`` aligned-image pixel positions."""
+    pts = np.asarray(points_xy, dtype=np.float64)
+    a = np.array([[float(xf_row["A11"]), float(xf_row["A12"])], [float(xf_row["A21"]), float(xf_row["A22"])]])
+    shifted = np.vstack(
+        [
+            pts[:, 0] - aligned_dims_xy[0] / 2.0 - float(xf_row["DX"]),
+            pts[:, 1] - aligned_dims_xy[1] / 2.0 - float(xf_row["DY"]),
+        ]
+    )
+    raw = np.linalg.solve(a, shifted)
+    return np.column_stack([raw[0] + raw_dims_xy[0] / 2.0, raw[1] + raw_dims_xy[1] / 2.0])
+
+
+def project_star_points_to_raw(
+    points_xyz: np.ndarray,
+    tilt_deg: float,
+    xf_row: dict,
+    tomo_dims_xyz: tuple[int, int, int],
+    raw_dims_xy: tuple[int, int],
+) -> np.ndarray:
+    """Project 3D particles given in the particle-STAR frame into one raw tilt image.
+
+    Parameters
+    ----------
+    points_xyz : numpy.ndarray
+        ``(N, 3)`` corner-frame tomogram pixels at the tilt-stack pixel size, y down (the frame of the
+        ``joint_optimize`` particle STAR files).
+    tilt_deg : float
+        Tilt angle of the image.
+    xf_row : dict
+        The image's ``.xf`` row (raw to aligned).
+    tomo_dims_xyz : tuple of int
+        Tomogram dimensions; X, Y are also the aligned image size.
+    raw_dims_xy : tuple of int
+        Raw image width and height.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(N, 2)`` raw-image pixel positions ``x, y`` (corner frame, y down).
+    """
+    x_dim, y_dim, z_dim = tomo_dims_xyz
+    pts = np.asarray(points_xyz, dtype=float).copy()
+    pts[:, 1] = (y_dim - 1) - pts[:, 1]  # STAR frame -> internal frame (y up)
+    center = corner_to_center_3d(pts, (z_dim, y_dim, x_dim))
+    aligned = center_to_corner_2d_bottom_left(project_y_axis(center, tilt_deg), (y_dim, x_dim))
+    return aligned_to_raw(aligned, xf_row, raw_dims_xy, (x_dim, y_dim))

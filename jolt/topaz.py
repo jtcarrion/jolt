@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -295,3 +296,142 @@ def detect_tilt_series(
     if not keep_work:
         shutil.rmtree(work_dir, ignore_errors=True)
     return stats
+
+
+_SEEDED_TOPAZ_TRAIN = (
+    "import sys, random, numpy, torch; s = int(sys.argv[1]); random.seed(s); "
+    "numpy.random.seed(s); torch.manual_seed(s); sys.argv = ['topaz'] + sys.argv[2:]; "
+    "from topaz.main import main; sys.exit(main())"
+)
+_P_OBSERVED = re.compile(r"^#?\s*(\S+)\s+(train|test)\s+([0-9.eE+-]+)\s+(\d+)\s+(\d+)\s*$")
+
+
+def dedup_labels(xy: np.ndarray, radius: float) -> np.ndarray:
+    """Greedy mask keeping a label only if it is at least ``radius`` pixels from every label kept before it."""
+    if radius <= 0 or len(xy) < 2:
+        return np.ones(len(xy), bool)
+    keep = np.zeros(len(xy), bool)
+    kept: list[np.ndarray] = []
+    for i, p in enumerate(xy):
+        if kept and (np.hypot(*(np.asarray(kept) - p).T) < radius).any():
+            continue
+        keep[i] = True
+        kept.append(p)
+    return keep
+
+
+def write_training_files(images: list[tuple[str, Path, np.ndarray, str]], out_dir: Path, radius: int) -> dict:
+    """Write Topaz training tables.
+
+    Parameters
+    ----------
+    images : list of tuple
+        ``(image name, preprocessed image path, (n, 2) labels, role)`` with role ``"train"`` or ``"test"``.
+        Image names must be unique; the files are linked under that name (Topaz matches labels to images by
+        the file's base name).
+    out_dir : pathlib.Path
+    radius : int
+        Label radius; labels closer than this are de-duplicated.
+
+    Returns
+    -------
+    dict
+        Image and label counts per role.
+    """
+    links = out_dir / "images"
+    links.mkdir(parents=True, exist_ok=True)
+    counts = {}
+    for role in ("train", "test"):
+        image_lines, coord_lines, n_raw, n_kept = [], [], 0, 0
+        for name, path, xy, r in images:
+            if r != role:
+                continue
+            link = links / f"{name}.mrc"
+            if link.is_symlink() or link.exists():
+                link.unlink()
+            link.symlink_to(Path(path).resolve())
+            image_lines.append(f"{name}\t{link}")
+            keep = dedup_labels(xy, radius)
+            n_raw += len(keep)
+            n_kept += int(keep.sum())
+            coord_lines += [f"{name}\t{x:.2f}\t{y:.2f}" for x, y in xy[keep]]
+        (out_dir / f"{role}_images.txt").write_text("image_name\tpath\n" + "\n".join(image_lines) + "\n")
+        (out_dir / f"{role}_coords.txt").write_text("image_name\tx_coord\ty_coord\n" + "\n".join(coord_lines) + "\n")
+        counts[role] = {"n_images": len(image_lines), "labels_raw": n_raw, "labels_kept": n_kept}
+    return counts
+
+
+def train(
+    topaz: TopazInstall,
+    data_dir: Path,
+    run_dir: Path,
+    *,
+    model: str,
+    radius: int,
+    num_particles: float,
+    learning_rate: float,
+    minibatch_size: int,
+    epoch_size: int,
+    epochs: int,
+    seed: int,
+    device: int,
+    log=print,
+) -> dict:
+    """Run ``topaz train`` (GE-binomial, from a pretrained model) on tables made by :func:`write_training_files`.
+
+    Training stops at once if Topaz reports that no labeled region was observed on the training split (a
+    sign that image names and label names do not match).
+
+    Returns
+    -------
+    dict
+        ``model`` (path of the final epoch's model, or None), ``p_observed``, ``returncode``, ``aborted`` and
+        the held-out precision curve if Topaz wrote one.
+    """
+    (run_dir / "models").mkdir(parents=True, exist_ok=True)
+    args = [
+        "train",
+        "--train-images", str(data_dir / "train_images.txt"), "--train-targets", str(data_dir / "train_coords.txt"),
+        "--test-images", str(data_dir / "test_images.txt"), "--test-targets", str(data_dir / "test_coords.txt"),
+        "-n", f"{num_particles:g}", "-r", str(radius), "-m", model, "--pretrained", "--method", "GE-binomial",
+        "--learning-rate", f"{learning_rate:g}", "--minibatch-size", str(minibatch_size), "--epoch-size",
+        str(epoch_size), "--num-epochs", str(epochs), f"--device={device}",
+        "--save-prefix", str(run_dir / "models" / "model"), "-o", str(run_dir / "train_curve.txt"),
+    ]  # fmt: skip
+    command = [topaz.python, "-c", _SEEDED_TOPAZ_TRAIN, str(seed), *args] if topaz.python else [topaz.executable, *args]
+    info: dict = {"p_observed": {}, "warnings": [], "aborted": None, "command": " ".join(command)}
+    with open(run_dir / "topaz_train.log", "w") as handle:
+        handle.write("$ " + " ".join(command) + "\n")
+        handle.flush()
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        for line in proc.stdout:
+            handle.write(line)
+            handle.flush()
+            m = _P_OBSERVED.match(line.strip())
+            if m and m.group(1) != "source":
+                split, p_obs = m.group(2), float(m.group(3))
+                info["p_observed"][split] = p_obs
+                log(f"p_observed[{split}] = {p_obs:.4e} ({m.group(4)} of {m.group(5)} regions)")
+                if split == "train" and p_obs == 0.0:
+                    info["aborted"] = "p_observed = 0 on the training split (image names do not match the labels)"
+                    proc.kill()
+                    break
+            if line.startswith("WARNING"):
+                info["warnings"].append(line.strip())
+        proc.wait()
+    info["returncode"] = proc.returncode
+    final = run_dir / "models" / f"model_epoch{epochs}.sav"
+    info["model"] = str(final) if final.exists() and not info["aborted"] and proc.returncode == 0 else None
+    curve = run_dir / "train_curve.txt"
+    if curve.exists():
+        lines = [
+            x.rstrip("\n").split("\t") for x in curve.read_text().splitlines() if x.strip() and not x.startswith("#")
+        ]
+        if lines:
+            head = lines[0]
+            if "split" in head and "auprc" in head:
+                info["test_auprc_by_epoch"] = [
+                    float(r[head.index("auprc")]) for r in lines[1:]
+                    if len(r) == len(head) and r[head.index("split")] == "test" and r[head.index("auprc")] != "-"
+                ]  # fmt: skip
+    return info
