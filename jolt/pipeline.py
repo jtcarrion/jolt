@@ -329,10 +329,14 @@ def run_tilt_series(
     table["rlnJoltDetectorScore"] = np.asarray(detector, dtype=float)
     table["rlnJoltResidual"] = res_kept
     write_star(star_path, table)
-    write_points_mod(
-        out / f"{inputs.name}_particles.mod",
-        table[["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]].to_numpy(dtype=float),
-    )
+    try:
+        write_points_mod(
+            out / f"{inputs.name}_particles.mod",
+            table[["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]].to_numpy(dtype=float),
+        )
+    except ImportError as exc:  # imodmodel is a dependency; reported if an install lacks it
+        log(f"[{inputs.name}] WARNING: IMOD model not written ({exc})")
+        status["mod_written"] = False
     status["n_particles"] = int(len(table))
     status["seconds"] = round(time.time() - t_start, 1)
     status["settings"] = asdict(s)

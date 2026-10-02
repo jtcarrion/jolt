@@ -2,9 +2,10 @@
 
 For every tilt series in jolt.yaml that has 2D picks, ``jolt joint_optimize`` builds 3D particle hypotheses from
 the picks (MLESAC), runs bundle adjustment of the particle positions and per-tilt shifts, selects the particles
-and scores each one with a figure of merit. Per tilt series it writes, in ``<project_dir>/joint_optimize/<TS>/``:
-the 3D particle STAR file (pixels at the tilt-stack pixel size, with figure of merit, mean 2D detector score
-and reprojection residual), an IMOD .mod model for 3dmod, the refined IMOD .xf alignment and run_status.json.
+and scores each one with a figure of merit. Per tilt series it writes, in ``<project_dir>/joint_optimize/<TS>/``
+(or under ``--output_dir``): the 3D particle STAR file (pixels at the tilt-stack pixel size, with figure of merit,
+mean 2D detector score and reprojection residual), an IMOD .mod model for 3dmod, the refined IMOD .xf alignment
+and run_status.json.
 """
 
 import argparse
@@ -72,6 +73,9 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         default=1,
         help="CPU math threads (OpenMP/MKL/OpenBLAS) per tilt-series process",
     )
+    execution.add_argument(
+        "--output_dir", default=None, help="where to write the results (default: <project_dir>/joint_optimize)"
+    )
     execution.add_argument("--overwrite", action="store_true", help="redo tilt series that already have outputs")
     return parser
 
@@ -97,7 +101,7 @@ def main(args: argparse.Namespace) -> None:
     no_picks = [n for n in names if not series[n].get("picks_2d")]
     if no_picks:
         raise SystemExit(f"no 2D picks registered for {no_picks}; run jolt detect_2d or jolt import --picks_2d")
-    out_root = project_dir / "joint_optimize"
+    out_root = Path(args.output_dir) if args.output_dir else project_dir / "joint_optimize"
     done = [n for n in names if (out_root / n / "run_status.json").exists()]
     if done and not args.overwrite:
         raise SystemExit(f"{len(done)} tilt series already have outputs in {out_root} ({done[:5]}...); use --overwrite")
