@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Environments
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Documentation build
+docs/_build/
+
+# Cryo-EM images, stacks and run outputs are never committed.
+# The only exception is the small test data set in tests/data/.
+*.mrc
+*.mrcs
+*.st
+*.ali
+*.rec
+*.tif
+*.tiff
+*.eer
+!tests/data/**/*.st
+slurm-*.out
+slurm-*.err
