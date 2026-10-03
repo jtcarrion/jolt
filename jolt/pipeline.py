@@ -6,7 +6,8 @@ Stages (all in the aligned frame of the tilt series):
 2. MLESAC: 3D hypotheses from the picks (:mod:`jolt.mlesac`).
 3. Keep hypotheses inside the tomogram (10 px margin in x and y, 5 px in z).
 4. Greedy bundle adjustment of the points and per-tilt shifts (:mod:`jolt.bundle_adjustment`). A failed or
-   non-finite result falls back to the MLESAC points, loudly; a diverged one is kept and flagged.
+   non-finite result falls back to the MLESAC points, loudly; a diverged result, or one where a tilt's shift
+   ran away, is kept and flagged.
 5. Write the refined ``.xf``: the input row plus the bundle-adjustment shift change, in the correction
    convention IMOD's ``newstack -xf`` applies.
 6. Selection: reprojection residual, border padding and near-duplicate removal (:mod:`jolt.selection`).
@@ -145,6 +146,44 @@ def load_picks(
     return picks
 
 
+def bundle_adjustment_health(x_init, x_ba, shifts0, shifts, tilts, divergence_rms_px, runaway_px) -> dict:
+    """Classify a bundle-adjustment result as ``ok``, ``diverged`` or ``shift_runaway``.
+
+    * Divergence is measured on the particle displacements after removing their mean: correcting a misaligned
+      tilt series legitimately moves every particle by the same amount, which is not a failure.
+    * A shift runaway is a tilt whose shift changed by more than ``runaway_px`` (half of the match distance by
+      default): the tilt has most likely locked onto the neighboring picks.
+
+    Returns
+    -------
+    dict
+        ``status`` and the measurements behind it.
+    """
+    disp = np.asarray(x_ba, dtype=float) - np.asarray(x_init, dtype=float)
+    mean_translation = disp.mean(axis=0) if len(disp) else np.zeros(3)
+    rms_raw = float(np.sqrt(np.mean(np.sum(disp**2, axis=1)))) if len(disp) else 0.0
+    centered = disp - mean_translation
+    rms_centered = float(np.sqrt(np.mean(np.sum(centered**2, axis=1)))) if len(disp) else 0.0
+    change = np.linalg.norm(np.asarray(shifts, dtype=float) - np.asarray(shifts0, dtype=float), axis=1)
+    runaway = [float(t) for t, c in zip(tilts, change, strict=True) if c > runaway_px]
+    if not np.isfinite(rms_centered) or rms_centered > divergence_rms_px:
+        status = "diverged"
+    elif runaway:
+        status = "shift_runaway"
+    else:
+        status = "ok"
+    return {
+        "status": status,
+        "rms_point_displacement_px": rms_raw,
+        "rms_point_displacement_centered_px": rms_centered,
+        "mean_point_translation_px": [float(v) for v in mean_translation],
+        "divergence_threshold_rms_px": float(divergence_rms_px),
+        "max_tilt_shift_change_px": float(change.max()) if len(change) else 0.0,
+        "runaway_tilts": runaway,
+        "runaway_threshold_px": float(runaway_px),
+    }
+
+
 def run_tilt_series(
     inputs: TiltSeriesInputs,
     output_dir: str | PathLike,
@@ -200,22 +239,29 @@ def run_tilt_series(
                 x_init, coords, ba_tilts, shifts0, image_hw, tomo_zyx, s.bundle, device=device, log=log
             )
             x_ba, shifts = ba["X"], ba["translations"]
-            disp = np.linalg.norm(np.asarray(x_ba, dtype=float) - x_init, axis=1)
-            rms_disp = float(np.sqrt(np.mean(disp**2))) if disp.size else 0.0
-            ba_status = {
-                "status": "ok",
-                "error": None,
-                "final_rmse_px": float(ba["rmse"]),
-                "point_reg_loss": float(ba["point_reg_loss"]),
-                "rms_point_displacement_px": rms_disp,
-                "divergence_threshold_rms_px": float(s.divergence_rms_px),
-                "match_statistics": ba["match_statistics"],
-            }
-            if not np.isfinite(rms_disp) or rms_disp > s.divergence_rms_px:
-                ba_status["status"] = "diverged"
+            ba_status = bundle_adjustment_health(
+                x_init, x_ba, shifts0, shifts, ba_tilts, s.divergence_rms_px, s.bundle.max_match_distance / 2.0
+            )
+            ba_status.update(
+                {
+                    "error": None,
+                    "final_rmse_px": float(ba["rmse"]),
+                    "point_reg_loss": float(ba["point_reg_loss"]),
+                    "steps": int(ba["steps"]),
+                    "converged": bool(ba["converged"]),
+                    "match_statistics": ba["match_statistics"],
+                }
+            )
+            if ba_status["status"] == "diverged":
                 log(
-                    f"[{inputs.name}] WARNING: bundle adjustment diverged (RMS point displacement {rms_disp:.3f} px "
+                    f"[{inputs.name}] WARNING: bundle adjustment diverged (RMS point displacement "
+                    f"{ba_status['rms_point_displacement_centered_px']:.3f} px after removing the common translation "
                     f"> {s.divergence_rms_px:.3f} px); its result is kept, treat this tilt series with caution"
+                )
+            elif ba_status["status"] == "shift_runaway":
+                log(
+                    f"[{inputs.name}] WARNING: the shift of tilt(s) {ba_status['runaway_tilts']} moved more than "
+                    f"{ba_status['runaway_threshold_px']:.1f} px; the result is kept, check these tilts"
                 )
             problems = []
             if not np.isfinite(float(ba["rmse"])):
