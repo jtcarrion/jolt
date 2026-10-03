@@ -44,7 +44,11 @@ Figure of merit
 
 ``rlnAutopickFigureOfMerit`` is ``0.96 geom + 0.01 (match_fraction + global_coverage + avg_dist_quality +
 rmse_quality)``, with ``geom = exp(-residual / 6)``. ``rlnJoltDetectorScore`` is the mean 2D detector score of
-the picks matched to the particle (in the 2D picker's own units) and ``rlnJoltResidual`` its reprojection
-residual in pixels. Two details are kept from the original code for identical output in 0.0.1: the residual
-is measured with the input alignment rather than the refined shifts, and the four small benchmark terms
-compare projections that are not mirrored in y.
+the picks matched to the particle (in the 2D picker's own units) and ``rlnJoltResidual`` the reprojection
+residual in pixels used by the selection step (``--residual_threshold``).
+
+The FOM, its benchmark terms and the detector score project each particle with the alignment written to the
+refined ``.xf`` (the input alignment plus the shifts bundle adjustment changed), and compare those projections
+with the picks in the picks' own frame. ``rlnJoltResidual`` and the selection still use the input alignment.
+Versions before 0.0.1 scored the FOM against the input alignment too, so on a misaligned tilt series good
+particles kept low FOM values after bundle adjustment had corrected the misalignment.

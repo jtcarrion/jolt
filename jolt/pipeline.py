@@ -341,6 +341,13 @@ def run_tilt_series(
     }
     log(f"[{inputs.name}] selection kept {len(kept)} of {len(points)} points")
 
+    # The FOM scores each particle against the alignment written to the refined .xf: the input alignment plus
+    # the shifts bundle adjustment changed (internal frame).
+    fom_shifts = (
+        {float(t): (float(d[0]), float(d[1])) for t, d in zip(ba_tilts, np.asarray(shifts) - shifts0, strict=True)}
+        if x_ba is not None
+        else None
+    )
     try:
         scores = fom.figure_of_merit(
             kept_points,
@@ -353,6 +360,7 @@ def run_tilt_series(
             tau=s.fom_tau,
             rmse_scale=s.fom_rmse_scale,
             device=device,
+            shifts_by_tilt=fom_shifts,
         )
         if len(scores["fom"]) != len(kept_points):
             raise RuntimeError(f"{len(scores['fom'])} FOM values for {len(kept_points)} points")
