@@ -16,6 +16,7 @@ import pkgutil
 
 import jolt
 import jolt.commands
+from jolt.utils import HelpFormatter
 
 
 def _command_name(module_name: str) -> str:
@@ -41,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
             _command_name(module_info.name),
             help=doc.splitlines()[0] if doc else "",
             description=doc,
-            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            formatter_class=HelpFormatter,
         )
         module.add_args(subparser)
         subparser.set_defaults(func=module.main)

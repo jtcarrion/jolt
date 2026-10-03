@@ -14,11 +14,13 @@ images, with the tilt image named by its stack index in ``rlnMicrographName`` (`
 
 import argparse
 
+from jolt.utils import HelpFormatter
+
 
 def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.ArgumentParser:
     """Add the ``jolt finetune`` arguments to ``parser`` (or to a new parser) and return it."""
     if parser is None:
-        parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+        parser = argparse.ArgumentParser(description=__doc__, formatter_class=HelpFormatter)
 
     parser.add_argument("project_dir", help="JOLT project directory (created by jolt import)")
 

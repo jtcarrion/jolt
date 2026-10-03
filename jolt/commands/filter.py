@@ -8,6 +8,8 @@ in it are combined). Tilt series are identified by ``rlnMicrographName`` (``TS_0
 
 import argparse
 
+from jolt.utils import HelpFormatter
+
 
 def _xyz_dims(text: str) -> tuple[int, int, int]:
     from jolt.commands.import_ import _xyz_dims as parse
@@ -18,7 +20,7 @@ def _xyz_dims(text: str) -> tuple[int, int, int]:
 def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.ArgumentParser:
     """Add the ``jolt filter`` arguments to ``parser`` (or to a new parser) and return it."""
     if parser is None:
-        parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+        parser = argparse.ArgumentParser(description=__doc__, formatter_class=HelpFormatter)
 
     parser.add_argument("input", help="3D particle STAR file, or a jolt joint_optimize output directory")
     parser.add_argument("-o", "--output", required=True, help="output STAR file for the selected particles")

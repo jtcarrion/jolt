@@ -7,6 +7,8 @@ writes ``<project_dir>/jolt.yaml``, which every later JOLT command reads.
 
 import argparse
 
+from jolt.utils import HelpFormatter
+
 
 def _xyz_dims(text: str) -> tuple[int, int, int]:
     """Parse ``"X,Y,Z"`` into three positive integers (pixels)."""
@@ -25,7 +27,7 @@ def _xyz_dims(text: str) -> tuple[int, int, int]:
 def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.ArgumentParser:
     """Add the ``jolt import`` arguments to ``parser`` (or to a new parser) and return it."""
     if parser is None:
-        parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+        parser = argparse.ArgumentParser(description=__doc__, formatter_class=HelpFormatter)
 
     core = parser.add_argument_group("Core arguments")
     core.add_argument("--warp_dir", required=True, help="WarpTools project directory")
