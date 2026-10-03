@@ -36,10 +36,25 @@ def test_health_flags_divergence_and_shift_runaway():
 
     rng = np.random.default_rng(1)
     x0 = rng.uniform(0, 100, (50, 3))
-    diverged = bundle_adjustment_health(
-        x0, x0 + rng.normal(0, 10, x0.shape), np.zeros((2, 2)), np.zeros((2, 2)), [0.0, 3.0], 8.165, 6.0
-    )
+    tilts = list(np.arange(-45.0, 46.0, 3.0))
+    zero = np.zeros((len(tilts), 2))
+    diverged = bundle_adjustment_health(x0, x0 + rng.normal(0, 10, x0.shape), zero, zero, tilts, 8.165, 6.0)
     assert diverged["status"] == "diverged"
-    shifts = np.array([[0.5, 0.2], [-7.8, -21.3]])
-    runaway = bundle_adjustment_health(x0, x0, np.zeros((2, 2)), shifts, [0.0, -3.0], 8.165, 6.0)
-    assert runaway["status"] == "shift_runaway" and runaway["runaway_tilts"] == [-3.0]
+    # One tilt far outside an otherwise well-aligned series (the observed runaway: 22.7 px).
+    shifts = rng.normal(0, 0.4, zero.shape)
+    shifts[14] = [-7.8, -21.3]
+    runaway = bundle_adjustment_health(x0, x0, zero, shifts, tilts, 8.165, 6.0)
+    assert runaway["status"] == "shift_runaway" and runaway["runaway_tilts"] == [tilts[14]]
+
+
+def test_health_accepts_large_corrections_spread_over_all_tilts():
+    import numpy as np
+
+    from jolt.pipeline import bundle_adjustment_health
+
+    rng = np.random.default_rng(2)
+    x0 = rng.uniform(0, 100, (50, 3))
+    tilts = list(np.arange(-45.0, 46.0, 3.0))
+    shifts = rng.uniform(-8.0, 8.0, (len(tilts), 2))  # a +-8 px misaligned input being corrected
+    h = bundle_adjustment_health(x0, x0, np.zeros_like(shifts), shifts, tilts, 8.165, 6.0)
+    assert h["status"] == "ok" and h["max_tilt_shift_change_px"] > 6.0

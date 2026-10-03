@@ -146,13 +146,21 @@ def load_picks(
     return picks
 
 
+#: A tilt's shift change must exceed the series median by this many robust standard deviations to be a runaway.
+RUNAWAY_ROBUST_Z = 8.0
+
+
 def bundle_adjustment_health(x_init, x_ba, shifts0, shifts, tilts, divergence_rms_px, runaway_px) -> dict:
     """Classify a bundle-adjustment result as ``ok``, ``diverged`` or ``shift_runaway``.
 
     * Divergence is measured on the particle displacements after removing their mean: correcting a misaligned
       tilt series legitimately moves every particle by the same amount, which is not a failure.
-    * A shift runaway is a tilt whose shift changed by more than ``runaway_px`` (half of the match distance by
-      default): the tilt has most likely locked onto the neighboring picks.
+    * A shift runaway is a tilt whose shift change is an outlier within its own tilt series (more than
+      ``RUNAWAY_ROBUST_Z`` robust standard deviations, 1.4826 x MAD, above the series median) and larger than
+      ``runaway_px`` (half of the match distance by default): that tilt has most likely locked onto the
+      neighboring picks. A fixed threshold alone cannot work, because legitimate corrections grow with how
+      misaligned the input is (up to ~13 px per tilt for +-8 px misalignments on CZI), but they are spread over
+      all tilts, while a runaway is one tilt far outside the rest (22-48 px observed).
 
     Returns
     -------
@@ -165,7 +173,13 @@ def bundle_adjustment_health(x_init, x_ba, shifts0, shifts, tilts, divergence_rm
     centered = disp - mean_translation
     rms_centered = float(np.sqrt(np.mean(np.sum(centered**2, axis=1)))) if len(disp) else 0.0
     change = np.linalg.norm(np.asarray(shifts, dtype=float) - np.asarray(shifts0, dtype=float), axis=1)
-    runaway = [float(t) for t, c in zip(tilts, change, strict=True) if c > runaway_px]
+    median = float(np.median(change)) if len(change) else 0.0
+    spread = 1.4826 * float(np.median(np.abs(change - median))) if len(change) else 0.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        robust_z = np.where(spread > 0, (change - median) / spread, np.where(change > median, np.inf, 0.0))
+    runaway = [
+        float(t) for t, c, z in zip(tilts, change, robust_z, strict=True) if c > runaway_px and z > RUNAWAY_ROBUST_Z
+    ]
     if not np.isfinite(rms_centered) or rms_centered > divergence_rms_px:
         status = "diverged"
     elif runaway:
@@ -179,6 +193,7 @@ def bundle_adjustment_health(x_init, x_ba, shifts0, shifts, tilts, divergence_rm
         "mean_point_translation_px": [float(v) for v in mean_translation],
         "divergence_threshold_rms_px": float(divergence_rms_px),
         "max_tilt_shift_change_px": float(change.max()) if len(change) else 0.0,
+        "max_tilt_shift_change_robust_z": float(np.max(robust_z)) if len(change) else 0.0,
         "runaway_tilts": runaway,
         "runaway_threshold_px": float(runaway_px),
     }
