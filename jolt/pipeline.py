@@ -10,7 +10,8 @@ Stages (all in the aligned frame of the tilt series):
    ran away, is kept and flagged.
 5. Write the refined ``.xf``: the input row plus the bundle-adjustment shift change, in the correction
    convention IMOD's ``newstack -xf`` applies.
-6. Selection: reprojection residual, border padding and near-duplicate removal (:mod:`jolt.selection`).
+6. Selection: reprojection residual (with the refined shifts), border padding and near-duplicate removal
+   (:mod:`jolt.selection`).
 7. Figure of merit and mean detector score (:mod:`jolt.fom`), then the particle STAR, an IMOD ``.mod`` and
    ``run_status.json``.
 """
@@ -319,8 +320,15 @@ def run_tilt_series(
         }
 
     points = np.asarray(x_ba if x_ba is not None else x_init, dtype=float)
+    # Selection and the FOM measure each particle against the alignment written to the refined .xf: the input
+    # alignment plus the shifts bundle adjustment changed (internal frame).
+    refined_shifts = (
+        {float(t): (float(d[0]), float(d[1])) for t, d in zip(ba_tilts, np.asarray(shifts) - shifts0, strict=True)}
+        if x_ba is not None
+        else None
+    )
     residuals = (
-        fom.reprojection_residuals(points, coords, tilts_file, image_hw, tomo_zyx, device)
+        fom.reprojection_residuals(points, coords, tilts_file, image_hw, tomo_zyx, device, refined_shifts)
         if len(points)
         else np.zeros(0)
     )
@@ -341,13 +349,6 @@ def run_tilt_series(
     }
     log(f"[{inputs.name}] selection kept {len(kept)} of {len(points)} points")
 
-    # The FOM scores each particle against the alignment written to the refined .xf: the input alignment plus
-    # the shifts bundle adjustment changed (internal frame).
-    fom_shifts = (
-        {float(t): (float(d[0]), float(d[1])) for t, d in zip(ba_tilts, np.asarray(shifts) - shifts0, strict=True)}
-        if x_ba is not None
-        else None
-    )
     try:
         scores = fom.figure_of_merit(
             kept_points,
@@ -360,7 +361,7 @@ def run_tilt_series(
             tau=s.fom_tau,
             rmse_scale=s.fom_rmse_scale,
             device=device,
-            shifts_by_tilt=fom_shifts,
+            shifts_by_tilt=refined_shifts,
         )
         if len(scores["fom"]) != len(kept_points):
             raise RuntimeError(f"{len(scores['fom'])} FOM values for {len(kept_points)} points")

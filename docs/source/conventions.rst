@@ -47,8 +47,8 @@ rmse_quality)``, with ``geom = exp(-residual / 6)``. ``rlnJoltDetectorScore`` is
 the picks matched to the particle (in the 2D picker's own units) and ``rlnJoltResidual`` the reprojection
 residual in pixels used by the selection step (``--residual_threshold``).
 
-The FOM, its benchmark terms and the detector score project each particle with the alignment written to the
-refined ``.xf`` (the input alignment plus the shifts bundle adjustment changed), and compare those projections
-with the picks in the picks' own frame. ``rlnJoltResidual`` and the selection still use the input alignment.
-Versions before 0.0.1 scored the FOM against the input alignment too, so on a misaligned tilt series good
-particles kept low FOM values after bundle adjustment had corrected the misalignment.
+The residual (and so the selection), the FOM, its benchmark terms and the detector score project each
+particle with the alignment written to the refined ``.xf`` (the input alignment plus the shifts bundle
+adjustment changed), and compare those projections with the picks in the picks' own frame. Versions before
+0.0.1 used the input alignment, so on a misaligned tilt series good particles kept large residuals and low FOM
+values after bundle adjustment had corrected the misalignment.
