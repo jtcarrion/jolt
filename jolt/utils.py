@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
 
@@ -54,3 +55,16 @@ class FileLog:
             print(message, flush=True)
         with open(self.path, "a") as handle:
             handle.write(message + "\n")
+
+
+class HelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
+    """Show an option's default only when it is informative and the help text does not already state one.
+
+    Flags (``False``) and options without a default (``None``) are shown without "(default: ...)".
+    """
+
+    def _get_help_string(self, action):
+        text = action.help or ""
+        if "default" in text or action.default in (None, False, argparse.SUPPRESS) or not action.option_strings:
+            return text
+        return super()._get_help_string(action)

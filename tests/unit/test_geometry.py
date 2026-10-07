@@ -30,9 +30,30 @@ def test_raw_picks_identity_xf_is_noop_for_equal_canvases():
 def test_raw_picks_rotation_and_canvas_change():
     # 90 degree rotation of a landscape raw image onto a portrait aligned canvas.
     row = {"A11": 0.0, "A12": -1.0, "A21": 1.0, "A22": 0.0, "DX": 2.0, "DY": -1.0}
-    out = geometry.raw_picks_to_aligned(np.array([[394.0 + 10.0, 280.0, 0.0]]), row, (788, 560), (560, 788))
-    # x' = A (x - c_raw) + d + c_out with c_raw = (394, 280), c_out = (280, 394)
-    np.testing.assert_allclose(out[0, :2], [0.0 * 10 - 1.0 * 0 + 2.0 + 280.0, 1.0 * 10 + 0.0 - 1.0 + 394.0])
+    c_raw, c_out = np.array([393.5, 279.5]), np.array([279.5, 393.5])  # (N - 1) / 2
+    out = geometry.raw_picks_to_aligned(np.array([[c_raw[0] + 10.0, c_raw[1], 0.0]]), row, (788, 560), (560, 788))
+    np.testing.assert_allclose(out[0, :2], [0.0 + 2.0 + c_out[0], 10.0 - 1.0 + c_out[1]])
+
+
+# Translations measured from IMOD 5.1.9 ``newstack -xf -linear`` on Gaussian blobs at known positions
+# (raw size, aligned size, xf, measured translation t = aligned - A @ raw). IMOD rotates about (N - 1) / 2 in
+# 0-based pixel coordinates; W / 2 would be off by up to ~0.45 px.
+ROT30 = [np.cos(0.5236), -np.sin(0.5236), np.sin(0.5236), np.cos(0.5236)]
+IMOD_MEASURED = [
+    ((63, 63), (63, 63), [*ROT30, 1.5, 2.5], (21.151, -8.845)),
+    ((64, 64), (64, 64), [*ROT30, 1.5, 2.5], (21.470, -9.030)),
+    ((80, 60), (70, 90), [*ROT30, -2.0, 1.0], (13.040, 0.204)),
+    ((63, 47), (47, 63), [0.0, -1.0, 1.0, 0.0, 0.0, 0.0], (46.0, 0.0)),
+]
+
+
+@pytest.mark.parametrize(("raw", "aligned", "xf", "measured"), IMOD_MEASURED)
+def test_raw_to_aligned_matches_imod_newstack(raw, aligned, xf, measured):
+    row = dict(zip(("A11", "A12", "A21", "A22", "DX", "DY"), xf, strict=True))
+    point = np.array([[20.0, 18.0, 0.0]])
+    out = geometry.raw_picks_to_aligned(point, row, raw, aligned)[0, :2]
+    a = np.array([[xf[0], xf[1]], [xf[2], xf[3]]])
+    np.testing.assert_allclose(out - a @ point[0, :2], measured, atol=0.01)
 
 
 def test_projection_matrices_follow_the_tilt_model():

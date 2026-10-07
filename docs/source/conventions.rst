@@ -29,20 +29,26 @@ Refined alignment
 bundle adjustment found, in the correction convention IMOD's ``newstack -xf`` applies. Rows keep the input
 order. If bundle adjustment fails, no refined ``.xf`` is written (``run_status.json`` says so).
 
-Image center (known issue)
---------------------------
+Image center
+------------
 
-The raw-to-aligned pick transform rotates about ``(W/2, H/2)``, while the rest of the geometry uses
-``((W - 1)/2, (H - 1)/2)``; the two differ by half a pixel. Version 0.0.1 keeps both exactly as the original
-code had them so that its output is unchanged; the convention will be settled (and checked against IMOD and
-TeamTomo) in a following release.
+All image and tomogram centers are ``((N - 1)/2)`` in 0-based pixel coordinates, where an integer coordinate
+is the center of a pixel (the Topaz and STAR convention). This is what IMOD's ``newstack -xf`` uses: applied to
+images with Gaussian blobs at known positions, its translations match ``(N - 1)/2`` to 0.003 px, whereas
+``N/2`` is off by up to about 0.45 px when the alignment rotates the image or changes the canvas. Versions
+before 0.0.1 used ``N/2`` in the raw-to-aligned pick transform, which displaced particles by up to about 1 px
+on rotated, reshaped canvases (bmp6-like geometry) without any visible change in the residuals.
 
 Figure of merit
 ---------------
 
 ``rlnAutopickFigureOfMerit`` is ``0.96 geom + 0.01 (match_fraction + global_coverage + avg_dist_quality +
 rmse_quality)``, with ``geom = exp(-residual / 6)``. ``rlnJoltDetectorScore`` is the mean 2D detector score of
-the picks matched to the particle (in the 2D picker's own units) and ``rlnJoltResidual`` its reprojection
-residual in pixels. Two details are kept from the original code for identical output in 0.0.1: the residual
-is measured with the input alignment rather than the refined shifts, and the four small benchmark terms
-compare projections that are not mirrored in y.
+the picks matched to the particle (in the 2D picker's own units) and ``rlnJoltResidual`` the reprojection
+residual in pixels used by the selection step (``--residual_threshold``).
+
+The residual (and so the selection), the FOM, its benchmark terms and the detector score project each
+particle with the alignment written to the refined ``.xf`` (the input alignment plus the shifts bundle
+adjustment changed), and compare those projections with the picks in the picks' own frame. Versions before
+0.0.1 used the input alignment, so on a misaligned tilt series good particles kept large residuals and low FOM
+values after bundle adjustment had corrected the misalignment.

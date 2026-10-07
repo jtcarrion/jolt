@@ -15,11 +15,12 @@ Projection
     ``u = cos(theta) X + sin(theta) Z + dx`` and ``v = Y + dy``, where ``(dx, dy)`` are the per-tilt shifts
     refined by bundle adjustment.
 
-Image-center conventions (known issue)
---------------------------------------
-The raw-to-aligned pick transform (:func:`raw_picks_to_aligned`) rotates about ``(W/2, H/2)``, while every
-other step uses ``((W - 1)/2, (H - 1)/2)``. The two differ by half a pixel. Version 0.0.1 keeps both exactly
-as the original code had them so that its output is identical; the convention will be settled separately.
+Image center
+------------
+Every center is ``((N - 1)/2)`` in 0-based pixel coordinates (an integer coordinate is the center of a pixel,
+as in Topaz and STAR files). This is the center IMOD's ``newstack -xf`` rotates about: measured with Gaussian
+blobs at known positions, its translations match ``(N - 1)/2`` to 0.003 px, while ``N/2`` is off by up to about
+0.45 px on rotated or reshaped canvases.
 """
 
 from __future__ import annotations
@@ -97,8 +98,8 @@ def raw_picks_to_aligned(
 ) -> np.ndarray:
     """Map picks made on a raw tilt image into the aligned frame with that image's IMOD ``.xf`` row.
 
-    ``x' = A (x - c_raw) + (DX, DY) + c_aligned``, with the centers ``c = (W/2, H/2)`` of each canvas (the
-    convention IMOD's ``newstack`` uses for ``.xf`` transforms).
+    ``x' = A (x - c_raw) + (DX, DY) + c_aligned``, with the centers ``c = ((W - 1)/2, (H - 1)/2)`` of each
+    canvas, the convention IMOD's ``newstack -xf`` uses.
 
     Parameters
     ----------
@@ -115,8 +116,8 @@ def raw_picks_to_aligned(
         ``(N, 3)`` array in aligned-image pixels.
     """
     arr = np.asarray(picks, dtype=np.float64)
-    cx_raw, cy_raw = raw_dims_xy[0] / 2.0, raw_dims_xy[1] / 2.0
-    cx_out, cy_out = aligned_dims_xy[0] / 2.0, aligned_dims_xy[1] / 2.0
+    cx_raw, cy_raw = (raw_dims_xy[0] - 1) / 2.0, (raw_dims_xy[1] - 1) / 2.0
+    cx_out, cy_out = (aligned_dims_xy[0] - 1) / 2.0, (aligned_dims_xy[1] - 1) / 2.0
     a11, a12 = float(xf_row["A11"]), float(xf_row["A12"])
     a21, a22 = float(xf_row["A21"]), float(xf_row["A22"])
     dx, dy = float(xf_row["DX"]), float(xf_row["DY"])
@@ -224,12 +225,12 @@ def aligned_to_raw(points_xy: np.ndarray, xf_row: dict, raw_dims_xy, aligned_dim
     a = np.array([[float(xf_row["A11"]), float(xf_row["A12"])], [float(xf_row["A21"]), float(xf_row["A22"])]])
     shifted = np.vstack(
         [
-            pts[:, 0] - aligned_dims_xy[0] / 2.0 - float(xf_row["DX"]),
-            pts[:, 1] - aligned_dims_xy[1] / 2.0 - float(xf_row["DY"]),
+            pts[:, 0] - (aligned_dims_xy[0] - 1) / 2.0 - float(xf_row["DX"]),
+            pts[:, 1] - (aligned_dims_xy[1] - 1) / 2.0 - float(xf_row["DY"]),
         ]
     )
     raw = np.linalg.solve(a, shifted)
-    return np.column_stack([raw[0] + raw_dims_xy[0] / 2.0, raw[1] + raw_dims_xy[1] / 2.0])
+    return np.column_stack([raw[0] + (raw_dims_xy[0] - 1) / 2.0, raw[1] + (raw_dims_xy[1] - 1) / 2.0])
 
 
 def project_star_points_to_raw(
