@@ -1,6 +1,8 @@
 # JOLT release notes
 
 ## Unreleased
+- `joint_optimize --iter N` (default 1) runs N passes of picks -> MLESAC -> bundle adjustment, each from the previous
+  pass's refined alignment. The refined `.xf` is cumulative; `run_status.json` lists every pass under `iterations`.
 - Gold-bead anchors: `jolt import --fiducials imod` registers etomo `.fid` bead tracks; `joint_optimize`
   (`--fiducials anchor`, `--fiducial_weight 1.0`) adds them to bundle adjustment with fixed correspondences and
   writes `<ts>_fiducials.star`. On EMPIAR-10499 the refined alignment reaches the cross-validated bead floor

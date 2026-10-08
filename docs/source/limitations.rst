@@ -17,9 +17,11 @@ Limitations
   ``DimensionsAngstrom``). They were measured on one dataset with a small in-plane rotation (EMPIAR-10499,
   4.3 degrees); for large rotations (e.g. a 90-degree canvas swap) the scale is rotated into volume axes as Warp's
   code implies, which has not been measured yet.
-* Without gold beads, the alignment refined from picks alone converges to about 1.3-2.2 px bead RMS on
-  EMPIAR-10499 (limited by per-particle pick scatter): alignments worse than that improve, but picks alone cannot
-  reach fiducial quality. Register beads with ``jolt import --fiducials imod`` when an etomo ``.fid`` exists.
+* A single pass refines a misaligned tilt series only part of the way: on EMPIAR-10499 one pass from picks alone
+  stops at about 1.1-2.2 px bead RMS and loses recall (initialization runs on the misaligned picks). Use
+  ``--iter 3`` for poorly aligned data: each pass re-initializes on the improved alignment (8 px injected errors:
+  bead RMS 2.2 -> 1.1 px, recall 50 -> 67 %). Keep ``--iter 1`` for well-aligned series: extra passes drift slightly
+  (fiducial alignment: bead RMS 0.84 -> 0.90 px over 3 passes, recall unchanged), and each pass costs one run time.
 * With gold beads, the bundle-adjustment health check can flag ``shift_runaway`` when the beads legitimately correct
   a few badly aligned tilts by several pixels (seen on patch-tracking alignments of EMPIAR-10499); check the bead RMS
   in ``run_status.json`` (``fiducials``) before discarding such a series.
