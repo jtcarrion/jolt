@@ -67,6 +67,35 @@ class TiltSeriesInputs:
     tlt: Path
     raw_dims_xy: tuple[int, int]
     tomo_dims_xyz: tuple[int, int, int]
+    #: Frame of the written particle coordinates (:func:`output_frame_for`); ``None`` keeps JOLT's own frame
+    #: (the frame of IMOD and TeamTomo up to sub-voxel centers).
+    output_frame: geometry.OutputFrame | None = None
+
+
+def output_frame_for(
+    frame: str,
+    tomo_dims_xyz: tuple[int, int, int],
+    pixel_size: float,
+    xf: str | PathLike,
+    tlt: str | PathLike,
+    xml: str | PathLike | None,
+) -> geometry.OutputFrame:
+    """Output frame of one tilt series: Warp dimensions from its XML, image rotation from its ``.xf``."""
+    image_dims = volume_dims = None
+    if frame == "warp" and xml:
+        from jolt.io.warp import physical_dimensions
+
+        image_dims, volume_dims = physical_dimensions(xml)
+    rows = read_xf(xf, [float(t) for t in read_tlt(tlt)])
+    rotation = float(np.rad2deg(np.mean([np.arctan2(r["A21"], r["A11"]) for r in rows]))) if rows else 0.0
+    return geometry.output_frame_transform(
+        frame,
+        tomo_dims_xyz,
+        pixel_size,
+        warp_image_dims_angstrom=image_dims,
+        warp_volume_dims_angstrom=volume_dims,
+        image_rotation_deg=rotation,
+    )
 
 
 def tilt_index_from_name(name: str) -> int:
@@ -393,7 +422,15 @@ def run_tilt_series(
     )
     table = read_star_table(star_path)
     table["rlnCoordinateY"] = float(y_dim - 1) - table["rlnCoordinateY"].astype(float)
+    if inputs.output_frame is not None and len(table):
+        cols = ["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]
+        table[cols] = inputs.output_frame.to_frame(table[cols].to_numpy(dtype=float))
     write_star(star_path, table)
+    status["output_frame"] = (
+        inputs.output_frame.describe()
+        if inputs.output_frame is not None
+        else {"name": "jolt", "source": "JOLT's own frame (IMOD/TeamTomo up to sub-voxel centers)"}
+    )
     table = read_star_table(star_path)
     table["rlnAutopickFigureOfMerit"] = fom_values
     table["rlnJoltDetectorScore"] = np.asarray(detector, dtype=float)
@@ -434,5 +471,6 @@ def run_tilt_series_logged(inputs: TiltSeriesInputs, output_dir: str, settings: 
         "ba_error": status["ba"].get("error"),
         "fom_status": status.get("fom", {}).get("status"),
         "n_particles": status["n_particles"],
+        "output_frame": status["output_frame"]["name"],
         "seconds": status["seconds"],
     }
