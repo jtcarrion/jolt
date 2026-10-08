@@ -1,6 +1,10 @@
 # JOLT release notes
 
 ## Unreleased
+- Residual and selection: the reprojection residual (`rlnJoltResidual`, the FOM's main term, near-duplicate tie
+  breaking) is the RMS over the matched tilts (pick within `--match_distance`), and a new `rlnJoltMatchedTilts`
+  column counts them. The 12 px residual gate is off by default (`--residual_threshold` is optional). **Changes the
+  output**: more particles are kept and FOM values change; CZI F-beta rises at both beta.
 - Output frames: `joint_optimize --output_frame {warp,teamtomo}` (default `warp`, the frame of WarpTools tomograms
   and of `ts_export_particles`, with Warp's sub-voxel centers and size-rounding scale read from the Warp XML) and
   `finetune --labels_frame`. **Changes the default output**: earlier versions wrote JOLT's own frame, which is

@@ -41,8 +41,10 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
     optimization.add_argument(
         "--residual_threshold",
         type=float,
-        default=12.0,
-        help="drop particles whose reprojection residual after bundle adjustment exceeds this (pixels)",
+        default=None,
+        help="optional: drop particles whose reprojection residual after bundle adjustment exceeds this (pixels). The "
+        "residual is the RMS over the tilts with a pick within --match_distance, so values >= --match_distance have "
+        "no effect. Off by default: rank and filter with the figure of merit instead",
     )
     optimization.add_argument(
         "--mlesac_search_radius",

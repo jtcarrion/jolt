@@ -28,7 +28,10 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
     gates = parser.add_argument_group("Selection (each gate is off unless given)")
     gates.add_argument("--min_fom", type=float, default=None, help="keep particles with figure of merit >= this")
     gates.add_argument(
-        "--max_residual", type=float, default=None, help="keep particles with reprojection residual <= this (pixels)"
+        "--max_residual",
+        type=float,
+        default=None,
+        help="keep particles with reprojection residual (rlnJoltResidual: RMS over the matched tilts) <= this (pixels)",
     )
     gates.add_argument(
         "--min_detector_score",

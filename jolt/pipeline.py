@@ -10,7 +10,8 @@ Stages (all in the aligned frame of the tilt series):
    ran away, is kept and flagged.
 5. Write the refined ``.xf``: the input row plus the bundle-adjustment shift change, in the correction
    convention IMOD's ``newstack -xf`` applies.
-6. Selection: reprojection residual (with the refined shifts), border padding and near-duplicate removal
+6. Selection: particles with at least one matched tilt, border padding, near-duplicate removal (the lower matched
+   residual wins) and, only if set, a residual threshold
    (:mod:`jolt.selection`).
 7. Figure of merit and mean detector score (:mod:`jolt.fom`), then the particle STAR, an IMOD ``.mod`` and
    ``run_status.json``.
@@ -45,7 +46,7 @@ class JointOptimizeSettings:
     bundle: bundle_adjustment.BundleAdjustmentSettings = field(
         default_factory=bundle_adjustment.BundleAdjustmentSettings
     )
-    residual_threshold: float = 12.0
+    residual_threshold: float | None = None  # off: the residual gate removed true particles and gained nothing
     dedup_radius: float = 5.0
     border_padding: float = 6.0
     fom_search_radius: float = 10.0
@@ -356,10 +357,13 @@ def run_tilt_series(
         if x_ba is not None
         else None
     )
-    residuals = (
-        fom.reprojection_residuals(points, coords, tilts_file, image_hw, tomo_zyx, device, refined_shifts)
+    # Residual over the tilts where a pick is within the match distance (the tilts bundle adjustment fits).
+    residuals, n_matched = (
+        fom.matched_residuals(
+            points, coords, tilts_file, image_hw, tomo_zyx, s.bundle.max_match_distance, device, refined_shifts
+        )
         if len(points)
-        else np.zeros(0)
+        else (np.zeros(0), np.zeros(0, dtype=int))
     )
     kept = (
         selection.residual_selection(
@@ -391,6 +395,7 @@ def run_tilt_series(
             rmse_scale=s.fom_rmse_scale,
             device=device,
             shifts_by_tilt=refined_shifts,
+            match_distance=s.bundle.max_match_distance,
         )
         if len(scores["fom"]) != len(kept_points):
             raise RuntimeError(f"{len(scores['fom'])} FOM values for {len(kept_points)} points")
@@ -435,6 +440,7 @@ def run_tilt_series(
     table["rlnAutopickFigureOfMerit"] = fom_values
     table["rlnJoltDetectorScore"] = np.asarray(detector, dtype=float)
     table["rlnJoltResidual"] = res_kept
+    table["rlnJoltMatchedTilts"] = (n_matched[kept] if len(kept) else np.zeros(0, dtype=int)).astype(int)
     write_star(star_path, table)
     try:
         write_points_mod(

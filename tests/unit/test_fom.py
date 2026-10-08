@@ -63,3 +63,27 @@ def test_figure_of_merit_is_high_once_the_shifts_are_applied():
     unrefined = fom.figure_of_merit(points, coords, TILTS, IMAGE_HW, TOMO_ZYX, **kwargs)
     assert np.all(refined["fom"] > 0.97)  # two benchmark terms are ranked against the other points
     assert np.all(unrefined["fom"] < 0.3)
+
+
+def test_matched_residual_ignores_tilts_without_a_nearby_pick():
+    points = _points(n=1, seed=2)  # one particle, so a moved pick cannot land near another particle
+    coords = _picks(points, {})
+    exact = fom.matched_residuals(points, coords, TILTS, IMAGE_HW, TOMO_ZYX, 12.0, torch.device("cpu"))
+    # Move every pick of one tilt far away: the all-tilt RMS grows, the matched residual ignores that tilt.
+    far = {
+        t: (c.copy() if t != TILTS[0] else c + np.array([60.0, 0.0, 0.0], dtype=np.float32)) for t, c in coords.items()
+    }
+    all_rms = fom.reprojection_residuals(points, far, TILTS, IMAGE_HW, TOMO_ZYX, torch.device("cpu"))
+    res, n = fom.matched_residuals(points, far, TILTS, IMAGE_HW, TOMO_ZYX, 12.0, torch.device("cpu"))
+    np.testing.assert_allclose(exact[0], 0.0, atol=1e-3)
+    np.testing.assert_array_equal(exact[1], len(TILTS))
+    np.testing.assert_allclose(all_rms, np.sqrt(60.0**2 / len(TILTS)), rtol=1e-3)  # the moved tilt counts here
+    np.testing.assert_allclose(res, 0.0, atol=1e-3)
+    np.testing.assert_array_equal(n, len(TILTS) - 1)
+
+
+def test_matched_residual_is_infinite_without_any_matched_tilt():
+    points = _points(n=3, seed=4)
+    coords = {t: c + np.array([80.0, 80.0, 0.0], dtype=np.float32) for t, c in _picks(points, {}).items()}
+    res, n = fom.matched_residuals(points, coords, TILTS, IMAGE_HW, TOMO_ZYX, 12.0, torch.device("cpu"))
+    assert np.all(np.isinf(res)) and np.all(n == 0)

@@ -95,8 +95,17 @@ Figure of merit
 
 ``rlnAutopickFigureOfMerit`` is ``0.96 geom + 0.01 (match_fraction + global_coverage + avg_dist_quality +
 rmse_quality)``, with ``geom = exp(-residual / 6)``. ``rlnJoltDetectorScore`` is the mean 2D detector score of
-the picks matched to the particle (in the 2D picker's own units) and ``rlnJoltResidual`` the reprojection
-residual in pixels used by the selection step (``--residual_threshold``).
+the picks matched to the particle (in the 2D picker's own units), ``rlnJoltResidual`` the reprojection residual in
+pixels and ``rlnJoltMatchedTilts`` the number of tilts it is computed over.
+
+The residual is the RMS distance from the particle's projections to the nearest pick over the **matched tilts**:
+the tilts with a pick within the match distance (``--match_distance``, 12 px), which are the tilts bundle
+adjustment fits. Tilts where the 2D picker found nothing near the particle do not count against it. Versions before
+0.0.1 used the RMS over all tilts and dropped particles above 12 px; on EMPIAR-10499 (four pick sets) and both CZI
+cohorts that gate removed true particles without improving precision (a picker trained only on low tilts lost 12
+points of recall at 50 A), and the matched residual ranks true above false particles better on every set (AUROC
++0.02 to +0.22). ``joint_optimize`` therefore applies no residual threshold unless ``--residual_threshold`` is set;
+rank and filter with the figure of merit (``jolt filter --min_fom``) instead.
 
 The residual (and so the selection), the FOM, its benchmark terms and the detector score project each
 particle with the alignment written to the refined ``.xf`` (the input alignment plus the shifts bundle
