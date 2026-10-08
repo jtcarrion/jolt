@@ -138,3 +138,51 @@ def write_points_mod(
     if volume_dims_xyz is not None:
         model.header.xmax, model.header.ymax, model.header.zmax = (int(v) for v in volume_dims_xyz)
     model.to_file(path)
+
+
+def read_fiducial_beads(
+    fid_path: str | PathLike, prexg_path: str | PathLike, n_tilts: int, raw_dims_xy: tuple[int, int]
+):
+    """Gold-bead observations from an IMOD fiducial model (``.fid``), in the raw tilt-image frame.
+
+    etomo tracks beads on the coarse-prealigned stack, so the ``.fid`` is in the prealigned frame; each observation is
+    mapped back to the raw ``.st`` frame with the inverse of that view's ``.prexg`` transform (about the image center
+    ``(N - 1)/2``), after removing IMOD's model convention (voxel centers at index + 0.5). One contour is one bead, so
+    bead identity across tilts is known. Validated on EMPIAR-10499: beads mapped this way and run through JOLT land on
+    the gold in the tomograms to < 0.1 voxel.
+
+    Parameters
+    ----------
+    fid_path, prexg_path : str or path-like
+        The ``<ts>.fid`` model and the ``<ts>.prexg`` coarse prealignment of the same stack.
+    n_tilts : int
+        Number of images in the stack (rows of the ``.prexg``).
+    raw_dims_xy : tuple of int
+        Raw image width and height.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns ``bead_id`` (0-based, one per contour), ``tilt_index`` (0-based stack index), ``x``, ``y`` (raw frame,
+        pixels, y down as in STAR files).
+    """
+    import imodmodel
+    import pandas as pd
+
+    model = imodmodel.read(fid_path)
+    pre = np.loadtxt(prexg_path, ndmin=2)
+    if pre.shape[0] != int(n_tilts) or pre.shape[1] < 6:
+        raise ValueError(f"{prexg_path}: {pre.shape[0]} rows for a stack of {n_tilts} images")
+    a_pre = pre[:, :4].reshape(-1, 2, 2)
+    d_pre = pre[:, 4:6]
+    center = np.array([(raw_dims_xy[0] - 1) / 2.0, (raw_dims_xy[1] - 1) / 2.0])
+    view = np.rint(model["z"].to_numpy(float)).astype(int)
+    if view.min() < 0 or view.max() >= int(n_tilts):
+        raise ValueError(f"{fid_path}: bead observations on views outside 0..{int(n_tilts) - 1}")
+    xy = model[["x", "y"]].to_numpy(float) - 0.5
+    raw = np.empty_like(xy)
+    for i, (v, p) in enumerate(zip(view, xy, strict=True)):
+        raw[i] = np.linalg.solve(a_pre[v], p - center - d_pre[v]) + center
+    ids = model["object_id"].astype(str) + ":" + model["contour_id"].astype(str)
+    bead_id = pd.factorize(ids)[0]
+    return pd.DataFrame({"bead_id": bead_id, "tilt_index": view, "x": raw[:, 0], "y": raw[:, 1]})

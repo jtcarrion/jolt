@@ -10,7 +10,8 @@ Stages (all in the aligned frame of the tilt series):
    ran away, is kept and flagged.
 5. Write the refined ``.xf``: the input row plus the bundle-adjustment shift change, in the correction
    convention IMOD's ``newstack -xf`` applies.
-6. Selection: reprojection residual (with the refined shifts), border padding and near-duplicate removal
+6. Selection: particles with at least one matched tilt, border padding, near-duplicate removal (the lower matched
+   residual wins) and, only if set, a residual threshold
    (:mod:`jolt.selection`).
 7. Figure of merit and mean detector score (:mod:`jolt.fom`), then the particle STAR, an IMOD ``.mod`` and
    ``run_status.json``.
@@ -45,7 +46,7 @@ class JointOptimizeSettings:
     bundle: bundle_adjustment.BundleAdjustmentSettings = field(
         default_factory=bundle_adjustment.BundleAdjustmentSettings
     )
-    residual_threshold: float = 12.0
+    residual_threshold: float | None = None  # off: the residual gate removed true particles and gained nothing
     dedup_radius: float = 5.0
     border_padding: float = 6.0
     fom_search_radius: float = 10.0
@@ -53,6 +54,7 @@ class JointOptimizeSettings:
     fom_tau: float = 0.2
     fom_rmse_scale: float = 5.9999
     divergence_rms_px: float = 8.165
+    iterations: int = 1  # passes of picks -> MLESAC -> BA, each starting from the previous refined alignment
     volume_margin_xyz: tuple[float, float, float] = (10.0, 10.0, 5.0)
 
 
@@ -70,6 +72,8 @@ class TiltSeriesInputs:
     #: Frame of the written particle coordinates (:func:`output_frame_for`); ``None`` keeps JOLT's own frame
     #: (the frame of IMOD and TeamTomo up to sub-voxel centers).
     output_frame: geometry.OutputFrame | None = None
+    #: Gold-bead observations in the raw frame (``jolt import --fiducials imod``); ``None``: no beads.
+    fiducials_2d: Path | None = None
 
 
 def output_frame_for(
@@ -96,6 +100,56 @@ def output_frame_for(
         warp_volume_dims_angstrom=volume_dims,
         image_rotation_deg=rotation,
     )
+
+
+def load_fiducial_tracks(
+    star_path: str | PathLike,
+    tilts_file: list[float],
+    xf_rows: list[dict],
+    ba_tilts: list[float],
+    raw_dims_xy: tuple[int, int],
+    aligned_dims_xy: tuple[int, int],
+) -> tuple[bundle_adjustment.FiducialTracks, np.ndarray]:
+    """Gold-bead observations (raw frame STAR from ``jolt import --fiducials``) as bundle-adjustment tracks.
+
+    Each observation is mapped to the aligned frame with its tilt's ``.xf`` row (like the picks) and then to the
+    internal centered frame. Observations on tilts without picks (not in ``ba_tilts``) are dropped. Returns the tracks
+    and the original bead id of each track index.
+    """
+    table = read_star_table(
+        star_path, required=["rlnMicrographName", "rlnCoordinateX", "rlnCoordinateY", "rlnJoltBeadId"]
+    )
+    rows_t, rows_b, rows_uv, ids = [], [], [], []
+    bead_ids = sorted(int(b) for b in table["rlnJoltBeadId"].unique())
+    remap = {b: i for i, b in enumerate(bead_ids)}
+    for name, x, y, b in zip(
+        table["rlnMicrographName"],
+        table["rlnCoordinateX"],
+        table["rlnCoordinateY"],
+        table["rlnJoltBeadId"],
+        strict=True,
+    ):
+        v = tilt_index_from_name(str(name)) - 1
+        tilt = float(tilts_file[v])
+        j = next((k for k, t in enumerate(ba_tilts) if abs(float(t) - tilt) < 0.01), None)
+        if j is None:
+            continue
+        aligned = geometry.raw_picks_to_aligned(
+            np.array([[float(x), float(y), 1.0]]), xf_rows[v], raw_dims_xy, aligned_dims_xy
+        )[0, :2]
+        uv = geometry.corner_to_center_2d_bottom_left(aligned[None], (aligned_dims_xy[1], aligned_dims_xy[0]))[0]
+        rows_t.append(j)
+        rows_b.append(remap[int(b)])
+        rows_uv.append(uv)
+    present = sorted(set(rows_b))
+    compact = {b: i for i, b in enumerate(present)}
+    tracks = bundle_adjustment.FiducialTracks(
+        tilt_index=np.asarray(rows_t, dtype=np.int64),
+        bead_index=np.asarray([compact[b] for b in rows_b], dtype=np.int64),
+        uv=np.asarray(rows_uv, dtype=float).reshape(-1, 2),
+    )
+    ids = np.asarray([bead_ids[b] for b in present], dtype=np.int64)
+    return tracks, ids
 
 
 def tilt_index_from_name(name: str) -> int:
@@ -258,95 +312,168 @@ def run_tilt_series(
 
     tilts_file = [float(t) for t in read_tlt(inputs.tlt)]
     disk_rows = read_xf(inputs.xf, tilts_file)
-    coords = load_picks(inputs.picks_2d, tilts_file, inputs.picks_frame, disk_rows, inputs.raw_dims_xy, (x_dim, y_dim))
-    n_picks = int(sum(len(v) for v in coords.values()))
-    log(f"[{inputs.name}] {n_picks} picks on {len(coords)} tilt images ({inputs.picks_frame} frame)")
-    status["n_picks"] = n_picks
+    input_rows = disk_rows
+    n_iter = max(1, int(s.iterations))
+    iterations: list[dict] = []
+    refined_rows = None
+    for iteration in range(n_iter):
+        coords = load_picks(
+            inputs.picks_2d, tilts_file, inputs.picks_frame, disk_rows, inputs.raw_dims_xy, (x_dim, y_dim)
+        )
+        n_picks = int(sum(len(v) for v in coords.values()))
+        log(f"[{inputs.name}] {n_picks} picks on {len(coords)} tilt images ({inputs.picks_frame} frame)")
+        status["n_picks"] = n_picks
 
-    result = mlesac.run_mlesac(coords, image_hw, s.mlesac, device=device, log=log)
-    status["mlesac"] = {"n_points": int(len(result.X_3d)), "stage_counts": result.stage_counts}
+        result = mlesac.run_mlesac(coords, image_hw, s.mlesac, device=device, log=log)
+        status["mlesac"] = {"n_points": int(len(result.X_3d)), "stage_counts": result.stage_counts}
 
-    x_init = geometry.center_to_corner_3d(result.X_3d, tomo_zyx) if len(result.X_3d) else np.empty((0, 3))
-    inside = selection.inside_volume_mask(x_init, tomo_zyx, s.volume_margin_xyz) if len(x_init) else np.zeros(0, bool)
-    x_init = x_init[inside]
-    status["n_points_inside_volume"] = int(len(x_init))
-    log(f"[{inputs.name}] {len(x_init)} of {len(result.X_3d)} MLESAC points inside the tomogram")
+        x_init = geometry.center_to_corner_3d(result.X_3d, tomo_zyx) if len(result.X_3d) else np.empty((0, 3))
+        inside = (
+            selection.inside_volume_mask(x_init, tomo_zyx, s.volume_margin_xyz) if len(x_init) else np.zeros(0, bool)
+        )
+        x_init = x_init[inside]
+        status["n_points_inside_volume"] = int(len(x_init))
+        log(f"[{inputs.name}] {len(x_init)} of {len(result.X_3d)} MLESAC points inside the tomogram")
 
-    ba_tilts = sorted(coords.keys())
-    shifts0 = np.zeros((len(ba_tilts), 2), dtype=np.float32)
-    ba_status: dict = {"status": "not_run", "error": None}
-    x_ba = shifts = None
-    if len(x_init) == 0:
-        ba_status = {"status": "skipped", "error": "no 3D points to refine"}
-    else:
-        try:
-            ba = bundle_adjustment.greedy_bundle_adjustment(
-                x_init, coords, ba_tilts, shifts0, image_hw, tomo_zyx, s.bundle, device=device, log=log
+        ba_tilts = sorted(coords.keys())
+        shifts0 = np.zeros((len(ba_tilts), 2), dtype=np.float32)
+        tracks = bead_ids = None
+        if inputs.fiducials_2d is not None and s.bundle.fiducial_weight > 0:
+            tracks, bead_ids = load_fiducial_tracks(
+                inputs.fiducials_2d, tilts_file, disk_rows, ba_tilts, inputs.raw_dims_xy, (x_dim, y_dim)
             )
-            x_ba, shifts = ba["X"], ba["translations"]
-            ba_status = bundle_adjustment_health(
-                x_init, x_ba, shifts0, shifts, ba_tilts, s.divergence_rms_px, s.bundle.max_match_distance / 2.0
-            )
-            ba_status.update(
-                {
-                    "error": None,
-                    "final_rmse_px": float(ba["rmse"]),
-                    "point_reg_loss": float(ba["point_reg_loss"]),
-                    "steps": int(ba["steps"]),
-                    "converged": bool(ba["converged"]),
-                    "match_statistics": ba["match_statistics"],
-                }
-            )
-            if ba_status["status"] == "diverged":
-                log(
-                    f"[{inputs.name}] WARNING: bundle adjustment diverged (RMS point displacement "
-                    f"{ba_status['rms_point_displacement_centered_px']:.3f} px after removing the common translation "
-                    f"> {s.divergence_rms_px:.3f} px); its result is kept, treat this tilt series with caution"
-                )
-            elif ba_status["status"] == "shift_runaway":
-                log(
-                    f"[{inputs.name}] WARNING: the shift of tilt(s) {ba_status['runaway_tilts']} moved more than "
-                    f"{ba_status['runaway_threshold_px']:.1f} px; the result is kept, check these tilts"
-                )
-            problems = []
-            if not np.isfinite(float(ba["rmse"])):
-                problems.append(f"final RMSE = {ba['rmse']}")
-            if not np.all(np.isfinite(np.asarray(x_ba, dtype=float))):
-                problems.append("non-finite 3D points")
-            if not np.all(np.isfinite(np.asarray(shifts, dtype=float))):
-                problems.append("non-finite shifts")
-            if problems:
-                ba_status["status"] = "failed"
-                ba_status["error"] = "non-finite bundle-adjustment result: " + ", ".join(problems)
-                x_ba = shifts = None
-        except Exception as exc:  # reported, never silent
-            ba_status = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
-            x_ba = shifts = None
-        if x_ba is None:
+            _, d0 = bundle_adjustment.triangulate_tracks(tracks, ba_tilts) if tracks.n_beads else (None, np.zeros(0))
+            status["fiducials"] = {
+                "n_beads": tracks.n_beads,
+                "n_observations": int(len(tracks.uv)),
+                "weight": s.bundle.fiducial_weight,
+                "rmse_input_alignment_px": float(np.sqrt(np.mean(d0**2))) if len(d0) else None,
+            }
             log(
-                f"[{inputs.name}] WARNING: bundle adjustment {ba_status['status']}: {ba_status['error']}. "
-                "The particles are the MLESAC points and no refined .xf is written."
+                f"[{inputs.name}] {tracks.n_beads} gold beads, {len(tracks.uv)} observations "
+                "(anchors in bundle adjustment)"
             )
-    ba_status["output_points_source"] = "bundle_adjustment" if x_ba is not None else "mlesac"
-    ba_status["refined_xf_written"] = x_ba is not None
-    status["ba"] = ba_status
+            if tracks.n_beads == 0:
+                tracks = None
+        ba_status: dict = {"status": "not_run", "error": None}
+        x_ba = shifts = None
+        if len(x_init) == 0:
+            ba_status = {"status": "skipped", "error": "no 3D points to refine"}
+        else:
+            try:
+                ba = bundle_adjustment.greedy_bundle_adjustment(
+                    x_init,
+                    coords,
+                    ba_tilts,
+                    shifts0,
+                    image_hw,
+                    tomo_zyx,
+                    s.bundle,
+                    device=device,
+                    log=log,
+                    fiducials=tracks,
+                )
+                x_ba, shifts = ba["X"], ba["translations"]
+                ba_status = bundle_adjustment_health(
+                    x_init, x_ba, shifts0, shifts, ba_tilts, s.divergence_rms_px, s.bundle.max_match_distance / 2.0
+                )
+                ba_status.update(
+                    {
+                        "error": None,
+                        "final_rmse_px": float(ba["rmse"]),
+                        "point_reg_loss": float(ba["point_reg_loss"]),
+                        "steps": int(ba["steps"]),
+                        "converged": bool(ba["converged"]),
+                        "match_statistics": ba["match_statistics"],
+                    }
+                )
+                if ba_status["status"] == "diverged":
+                    log(
+                        f"[{inputs.name}] WARNING: bundle adjustment diverged (RMS point displacement "
+                        f"{ba_status['rms_point_displacement_centered_px']:.3f} px after removing the common "
+                        "translation "
+                        f"> {s.divergence_rms_px:.3f} px); its result is kept, treat this tilt series with caution"
+                    )
+                elif ba_status["status"] == "shift_runaway":
+                    log(
+                        f"[{inputs.name}] WARNING: the shift of tilt(s) {ba_status['runaway_tilts']} moved more than "
+                        f"{ba_status['runaway_threshold_px']:.1f} px; the result is kept, check these tilts"
+                    )
+                problems = []
+                if not np.isfinite(float(ba["rmse"])):
+                    problems.append(f"final RMSE = {ba['rmse']}")
+                if not np.all(np.isfinite(np.asarray(x_ba, dtype=float))):
+                    problems.append("non-finite 3D points")
+                if not np.all(np.isfinite(np.asarray(shifts, dtype=float))):
+                    problems.append("non-finite shifts")
+                if problems:
+                    ba_status["status"] = "failed"
+                    ba_status["error"] = "non-finite bundle-adjustment result: " + ", ".join(problems)
+                    x_ba = shifts = None
+            except Exception as exc:  # reported, never silent
+                ba_status = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+                x_ba = shifts = None
+            if x_ba is None:
+                log(
+                    f"[{inputs.name}] WARNING: bundle adjustment {ba_status['status']}: {ba_status['error']}. "
+                    "The particles are the MLESAC points and no refined .xf is written."
+                )
+        ba_status["output_points_source"] = "bundle_adjustment" if x_ba is not None else "mlesac"
+        status["ba"] = ba_status
 
+        if x_ba is not None:
+            delta = np.asarray(shifts, dtype=np.float64) - np.asarray(shifts0, dtype=np.float64)
+            refined_rows = []
+            for row in disk_rows:
+                new = dict(row)
+                j = next((i for i, t in enumerate(ba_tilts) if abs(float(t) - float(row["TILT"])) < 0.01), None)
+                if j is not None:
+                    # Correction convention: DX changes sign; DY keeps it (the internal frame is y up).
+                    new["DX"] = float(float(row["DX"]) + (-1.0) * delta[j, 0])
+                    new["DY"] = float(float(row["DY"]) + (+1.0) * delta[j, 1])
+                refined_rows.append(new)
+
+        pass_change = None
+        if x_ba is not None:
+            d = np.asarray(delta, dtype=float)
+            d = d - d.mean(axis=0)  # a common translation of all tilts is a gauge freedom, not a change
+            pass_change = float(np.sqrt(np.mean(np.sum(d**2, axis=1))))
+        iterations.append(
+            {
+                "iteration": iteration + 1,
+                "n_mlesac_points": int(len(result.X_3d)),
+                "n_points_inside_volume": int(len(x_init)),
+                "ba_status": ba_status["status"],
+                "shift_change_rms_px": pass_change,
+            }
+        )
+        if n_iter > 1:
+            log(
+                f"[{inputs.name}] iteration {iteration + 1}/{n_iter}: per-tilt shift change "
+                + (f"{pass_change:.3f} px rms" if pass_change is not None else "n/a (bundle adjustment did not run)")
+            )
+        if x_ba is None or iteration + 1 >= n_iter:
+            break
+        disk_rows = refined_rows
     if x_ba is not None:
-        delta = np.asarray(shifts, dtype=np.float64) - np.asarray(shifts0, dtype=np.float64)
-        refined_rows = []
-        for row in disk_rows:
-            new = dict(row)
-            j = next((i for i, t in enumerate(ba_tilts) if abs(float(t) - float(row["TILT"])) < 0.01), None)
-            if j is not None:
-                # Correction convention: DX changes sign; DY keeps it (the internal frame is y up).
-                new["DX"] = float(float(row["DX"]) + (-1.0) * delta[j, 0])
-                new["DY"] = float(float(row["DY"]) + (+1.0) * delta[j, 1])
-            refined_rows.append(new)
-        write_xf(out / f"{inputs.name}_refined.xf", refined_rows)
+        final_rows = refined_rows
+    elif iteration > 0:
+        # A later iteration failed: keep the alignment refined by the previous one (its input here).
+        final_rows = disk_rows
+        log(
+            f"[{inputs.name}] WARNING: iteration {iteration + 1} failed; "
+            f"the refined .xf is the one from iteration {iteration}"
+        )
+    else:
+        final_rows = None
+    if final_rows is not None:
+        write_xf(out / f"{inputs.name}_refined.xf", final_rows)
         status["xf_shift_change_px"] = {
-            "dx": [float(r["DX"]) - float(d["DX"]) for r, d in zip(refined_rows, disk_rows, strict=True)],
-            "dy": [float(r["DY"]) - float(d["DY"]) for r, d in zip(refined_rows, disk_rows, strict=True)],
+            "dx": [float(r["DX"]) - float(d["DX"]) for r, d in zip(final_rows, input_rows, strict=True)],
+            "dy": [float(r["DY"]) - float(d["DY"]) for r, d in zip(final_rows, input_rows, strict=True)],
         }
+    status["ba"]["refined_xf_written"] = final_rows is not None
+    status["iterations"] = iterations
 
     points = np.asarray(x_ba if x_ba is not None else x_init, dtype=float)
     # Selection and the FOM measure each particle against the alignment written to the refined .xf: the input
@@ -356,10 +483,13 @@ def run_tilt_series(
         if x_ba is not None
         else None
     )
-    residuals = (
-        fom.reprojection_residuals(points, coords, tilts_file, image_hw, tomo_zyx, device, refined_shifts)
+    # Residual over the tilts where a pick is within the match distance (the tilts bundle adjustment fits).
+    residuals, n_matched = (
+        fom.matched_residuals(
+            points, coords, tilts_file, image_hw, tomo_zyx, s.bundle.max_match_distance, device, refined_shifts
+        )
         if len(points)
-        else np.zeros(0)
+        else (np.zeros(0), np.zeros(0, dtype=int))
     )
     kept = (
         selection.residual_selection(
@@ -391,6 +521,7 @@ def run_tilt_series(
             rmse_scale=s.fom_rmse_scale,
             device=device,
             shifts_by_tilt=refined_shifts,
+            match_distance=s.bundle.max_match_distance,
         )
         if len(scores["fom"]) != len(kept_points):
             raise RuntimeError(f"{len(scores['fom'])} FOM values for {len(kept_points)} points")
@@ -435,6 +566,7 @@ def run_tilt_series(
     table["rlnAutopickFigureOfMerit"] = fom_values
     table["rlnJoltDetectorScore"] = np.asarray(detector, dtype=float)
     table["rlnJoltResidual"] = res_kept
+    table["rlnJoltMatchedTilts"] = (n_matched[kept] if len(kept) else np.zeros(0, dtype=int)).astype(int)
     write_star(star_path, table)
     try:
         write_points_mod(
@@ -446,6 +578,31 @@ def run_tilt_series(
         log(f"[{inputs.name}] WARNING: IMOD model not written ({exc})")
         status["mod_written"] = False
     status["n_particles"] = int(len(table))
+    if tracks is not None and x_ba is not None and "fiducials_X" in ba:
+        d1 = np.asarray(ba["fiducial_distances"], dtype=float)
+        status["fiducials"]["rmse_refined_px"] = float(np.sqrt(np.mean(d1**2)))
+        bead_xyz = np.asarray(ba["fiducials_X"], dtype=float).copy()
+        bead_xyz[:, 1] = float(y_dim - 1) - bead_xyz[:, 1]  # internal frame -> STAR frame (y down)
+        if inputs.output_frame is not None:
+            bead_xyz = inputs.output_frame.to_frame(bead_xyz)
+        per_bead = [float(np.sqrt(np.mean(d1[tracks.bead_index == b] ** 2))) for b in range(tracks.n_beads)]
+        write_star(
+            out / f"{inputs.name}_fiducials.star",
+            pd.DataFrame(
+                {
+                    "rlnCoordinateX": bead_xyz[:, 0],
+                    "rlnCoordinateY": bead_xyz[:, 1],
+                    "rlnCoordinateZ": bead_xyz[:, 2],
+                    "rlnMicrographName": f"{inputs.name}.tomostar",
+                    "rlnJoltBeadId": bead_ids,
+                    "rlnJoltResidual": per_bead,
+                }
+            ),
+        )
+        log(
+            f"[{inputs.name}] gold-bead RMS {status['fiducials']['rmse_input_alignment_px']:.3f} px "
+            f"(input alignment) -> {status['fiducials']['rmse_refined_px']:.3f} px (refined)"
+        )
     status["seconds"] = round(time.time() - t_start, 1)
     status["settings"] = asdict(s)
     with open(out / "run_status.json", "w") as handle:

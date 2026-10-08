@@ -41,8 +41,10 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
     optimization.add_argument(
         "--residual_threshold",
         type=float,
-        default=12.0,
-        help="drop particles whose reprojection residual after bundle adjustment exceeds this (pixels)",
+        default=None,
+        help="optional: drop particles whose reprojection residual after bundle adjustment exceeds this (pixels). The "
+        "residual is the RMS over the tilts with a pick within --match_distance, so values >= --match_distance have "
+        "no effect. Off by default: rank and filter with the figure of merit instead",
     )
     optimization.add_argument(
         "--mlesac_search_radius",
@@ -61,6 +63,30 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         type=float,
         default=10.0,
         help="radius of the soft pick assignment used by the figure of merit and the detector score (pixels)",
+    )
+
+    optimization.add_argument(
+        "--iter",
+        type=int,
+        default=1,
+        help="number of joint-optimization passes (exactly this many). Each pass maps the picks through the current "
+        "alignment, re-initializes the 3D particles (MLESAC) and runs bundle adjustment, starting from the alignment "
+        "refined by the previous pass. For misaligned tilt series: on EMPIAR-10499 with 8 px injected errors, 3 passes "
+        "raised recall from 50 to 67 percent. Keep 1 for well-aligned data (extra passes drift slightly); each pass "
+        "costs about one single-pass run time",
+    )
+    optimization.add_argument(
+        "--fiducials",
+        choices=["anchor", "off"],
+        default="anchor",
+        help="gold beads registered with jolt import --fiducials: anchor = use them in bundle adjustment with their "
+        "known tracks (fixed correspondences), refined together with the per-tilt shifts; off = ignore them",
+    )
+    optimization.add_argument(
+        "--fiducial_weight",
+        type=float,
+        default=1.0,
+        help="weight of the gold-bead term relative to the picks (mean loss per bead observation vs per matched pick)",
     )
 
     output = parser.add_argument_group("Output")
@@ -127,8 +153,10 @@ def main(args: argparse.Namespace) -> None:
             point_reg=args.point_reg,
             max_match_distance=args.match_distance,
             freeze_shifts=args.freeze_alignments,
+            fiducial_weight=args.fiducial_weight,
         ),
         residual_threshold=args.residual_threshold,
+        iterations=args.iter,
         fom_search_radius=args.fom_search_radius,
     )
     x, y, z = cfg["project"]["tomo_dims_xyz"]
@@ -143,6 +171,9 @@ def main(args: argparse.Namespace) -> None:
             tlt=Path(entry["tlt"]),
             raw_dims_xy=tuple(entry["raw_dims_xy"]),
             tomo_dims_xyz=(x, y, z),
+            fiducials_2d=Path(entry["fiducials_2d"])
+            if args.fiducials == "anchor" and entry.get("fiducials_2d")
+            else None,
             output_frame=pipeline.output_frame_for(
                 args.output_frame, (x, y, z), entry["pixel_size"], entry["xf"], entry["tlt"], entry.get("xml")
             ),

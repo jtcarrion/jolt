@@ -73,6 +73,16 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         help="frame of the --picks_2d coordinates: picked on the raw (unaligned) stack or on the aligned stack",
     )
 
+    beads = parser.add_argument_group("Gold beads (optional)")
+    beads.add_argument(
+        "--fiducials",
+        choices=["none", "imod"],
+        default="none",
+        help="register gold-bead tracks for joint_optimize to use as alignment anchors. imod: read each tilt "
+        "series' etomo fiducial model <ts>.fid with its coarse prealignment <ts>.prexg (from the tilt-series "
+        "folder); series without them get no beads",
+    )
+
     other = parser.add_argument_group("Other")
     other.add_argument("--ts", default=None, help="comma-separated tilt-series names to include (default: all)")
     other.add_argument("--overwrite", action="store_true", help="replace an existing jolt.yaml in --project_dir")
@@ -106,7 +116,7 @@ def main(args: argparse.Namespace) -> None:
     tomo_x, tomo_y, tomo_z = args.tomo_dims_xyz
     series = warp.discover(warp_dir, args.xml_path, args.tiltstack_path, parse_name_list(args.ts))
 
-    problems, entries = [], {}
+    problems, entries, pending_beads = [], {}, {}
     for ts in series:
         entry = {
             "xml": str(ts.xml),
@@ -139,11 +149,50 @@ def main(args: argparse.Namespace) -> None:
                     entry["picks_frame"] = args.picks_frame
                 except (ValueError, KeyError) as exc:
                     problems.append(str(exc))
+        if args.fiducials == "imod":
+            fid, prexg = ts.xf.parent / f"{ts.name}.fid", ts.xf.parent / f"{ts.name}.prexg"
+            if fid.is_file() and prexg.is_file():
+                try:
+                    from jolt.io.imod import read_fiducial_beads
+
+                    beads = read_fiducial_beads(fid, prexg, ts.n_tilts, ts.raw_dims_xy)
+                    pending_beads[ts.name] = beads
+                except (ValueError, KeyError) as exc:
+                    problems.append(f"{ts.name}: {exc}")
+            else:
+                print(
+                    f"WARNING: {ts.name}: no {fid.name} and {prexg.name} in {fid.parent}; no gold beads for this series"
+                )
         for warning in ts.warnings:
             print(f"WARNING: {warning}")
         entries[ts.name] = entry
     if problems:
         raise SystemExit(f"{len(problems)} problem(s) found; nothing was written:\n  " + "\n  ".join(problems))
+
+    if pending_beads:
+        import pandas as pd
+
+        from jolt.io import write_star
+
+        (project_dir / "fiducials").mkdir(parents=True, exist_ok=True)
+        for name, beads in pending_beads.items():
+            n = entries[name]["n_tilts"]
+            path = project_dir / "fiducials" / f"{name}_fiducials_2d.star"
+            write_star(
+                path,
+                pd.DataFrame(
+                    {
+                        "rlnMicrographName": [
+                            f"{name}_{int(v) + 1:0{max(2, len(str(n)))}d}" for v in beads["tilt_index"]
+                        ],
+                        "rlnCoordinateX": beads["x"],
+                        "rlnCoordinateY": beads["y"],
+                        "rlnJoltBeadId": beads["bead_id"].astype(int),
+                    }
+                ),
+            )
+            entries[name]["fiducials_2d"] = str(path.resolve())
+            print(f"{name}: {beads['bead_id'].nunique()} gold beads, {len(beads)} observations -> {path}")
 
     xml_path, tiltstack_path = warp.default_paths(warp_dir)
     cfg = {
@@ -159,7 +208,11 @@ def main(args: argparse.Namespace) -> None:
     config.record_command(cfg, "import", {k: v for k, v in vars(args).items() if k != "func"})
     path = config.save(project_dir, cfg)
     n_picks = sum(1 for e in entries.values() if "picks_2d" in e)
-    print(f"{len(entries)} tilt series imported ({n_picks} with 2D picks); configuration written to {path}")
+    n_beads = sum(1 for e in entries.values() if "fiducials_2d" in e)
+    print(
+        f"{len(entries)} tilt series imported ({n_picks} with 2D picks, {n_beads} with gold beads); "
+        f"configuration written to {path}"
+    )
 
 
 if __name__ == "__main__":

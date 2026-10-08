@@ -64,20 +64,24 @@ def dedup_indices(points: np.ndarray, priority: np.ndarray, radius: float, candi
 def residual_selection(
     points_corner: np.ndarray,
     residuals: np.ndarray,
-    residual_threshold: float,
+    residual_threshold: float | None,
     dedup_radius: float = 5.0,
     border_padding: float = 0.0,
     tomogram_dims_zyx: tuple[int, int, int] | None = None,
 ) -> np.ndarray:
     """Rows that pass the residual threshold, the border padding, and near-duplicate removal.
 
+    Rows with a non-finite residual are always dropped; ``residual_threshold=None`` applies no threshold.
     Duplicates are resolved in favor of the lower residual. Returns row indices in ascending order.
     """
     points = np.asarray(points_corner, dtype=float)
     residuals = np.asarray(residuals, dtype=float).reshape(-1)
     if residuals.shape[0] != points.shape[0]:
         raise ValueError(f"{residuals.shape[0]} residuals for {points.shape[0]} points")
-    rows = np.flatnonzero(np.isfinite(residuals) & (residuals <= float(residual_threshold))).astype(np.int64)
+    keep = np.isfinite(residuals)
+    if residual_threshold is not None:
+        keep &= residuals <= float(residual_threshold)
+    rows = np.flatnonzero(keep).astype(np.int64)
     if rows.size == 0:
         return rows
     if border_padding > 0 and tomogram_dims_zyx is not None:

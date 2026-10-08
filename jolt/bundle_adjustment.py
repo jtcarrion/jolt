@@ -44,6 +44,49 @@ class BundleAdjustmentSettings:
     huber_delta: float = 1.0
     max_match_distance: float = 12.0
     freeze_shifts: bool = False
+    fiducial_weight: float = 1.0  # weight of the gold-bead term (mean Huber loss per bead observation) vs the picks
+
+
+@dataclass
+class FiducialTracks:
+    """Gold-bead observations with known identity across tilts (e.g. from an IMOD ``.fid``).
+
+    Attributes
+    ----------
+    tilt_index : numpy.ndarray
+        ``(K,)`` index of each observation's tilt in the bundle adjustment's ``tilt_angles``.
+    bead_index : numpy.ndarray
+        ``(K,)`` bead of each observation, ``0..B-1``.
+    uv : numpy.ndarray
+        ``(K, 2)`` observations in the internal centered 2D frame (aligned frame, y up).
+    """
+
+    tilt_index: np.ndarray
+    bead_index: np.ndarray
+    uv: np.ndarray
+
+    @property
+    def n_beads(self) -> int:
+        """Number of beads."""
+        return int(self.bead_index.max()) + 1 if len(self.bead_index) else 0
+
+
+def triangulate_tracks(tracks: FiducialTracks, tilt_angles: list[float]) -> tuple[np.ndarray, np.ndarray]:
+    """Least-squares 3D position of every bead from its observations (``u = cos(t) X + sin(t) Z``, ``v = Y``).
+
+    Returns ``(B, 3)`` centered positions and the ``(K,)`` reprojection distance of every observation.
+    """
+    th = np.deg2rad(np.asarray(tilt_angles, dtype=float))[tracks.tilt_index]
+    pts = np.zeros((tracks.n_beads, 3))
+    dist = np.zeros(len(tracks.uv))
+    for b in range(tracks.n_beads):
+        sel = tracks.bead_index == b
+        m = np.column_stack([np.cos(th[sel]), np.sin(th[sel])])
+        xz, *_ = np.linalg.lstsq(m, tracks.uv[sel, 0], rcond=None)
+        y = tracks.uv[sel, 1].mean()
+        pts[b] = (xz[0], y, xz[1])
+        dist[sel] = np.hypot(m @ xz - tracks.uv[sel, 0], y - tracks.uv[sel, 1])
+    return pts, dist
 
 
 def _nearest_pick_targets(proj_valid: torch.Tensor, picks: torch.Tensor, max_match_distance: float):
@@ -120,8 +163,9 @@ def greedy_bundle_adjustment(
     settings: BundleAdjustmentSettings | None = None,
     device: torch.device | None = None,
     log=print,
+    fiducials: FiducialTracks | None = None,
 ) -> dict:
-    """Jointly refine 3D points and per-tilt shifts against the 2D picks.
+    """Jointly refine 3D points and per-tilt shifts against the 2D picks (and gold beads, if given).
 
     Parameters
     ----------
@@ -142,13 +186,17 @@ def greedy_bundle_adjustment(
         Defaults to CUDA when available.
     log : callable
         Receives progress messages.
+    fiducials : FiducialTracks, optional
+        Gold beads with known tracks. They enter with fixed correspondences (no matching): their 3D positions are
+        refined together with the shifts, and ``settings.fiducial_weight`` times their mean Huber loss is added.
 
     Returns
     -------
     dict
         ``X`` (refined corner-frame points), ``translations`` (refined shifts, ``(M, 2)``), ``rmse``,
         ``data_loss``, ``shift_reg_loss``, ``point_reg_loss``, ``loss_history``, ``steps``, ``converged``
-        (the loss stopped changing before ``max_steps``) and ``match_statistics``.
+        (the loss stopped changing before ``max_steps``) and ``match_statistics``; with ``fiducials`` also
+        ``fiducials_X`` (refined bead positions, corner frame) and ``fiducial_distances`` (per observation, px).
     """
     s = settings or BundleAdjustmentSettings()
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -175,6 +223,14 @@ def greedy_bundle_adjustment(
     else:
         shifts = torch.nn.Parameter(shifts_init_t.clone())
         params = [points, shifts]
+    use_beads = fiducials is not None and len(fiducials.uv) > 0 and s.fiducial_weight > 0
+    if use_beads:
+        bead_init, _ = triangulate_tracks(fiducials, tilts)
+        beads = torch.nn.Parameter(torch.as_tensor(bead_init, dtype=torch.float32, device=device))
+        params.append(beads)
+        bead_t = torch.as_tensor(fiducials.tilt_index, dtype=torch.long, device=device)
+        bead_b = torch.as_tensor(fiducials.bead_index, dtype=torch.long, device=device)
+        bead_uv = torch.as_tensor(fiducials.uv, dtype=torch.float32, device=device)
     optimizer = torch.optim.LBFGS(
         params,
         lr=s.lr,
@@ -202,6 +258,12 @@ def greedy_bundle_adjustment(
         point_delta = points - points_init
         point_loss = s.point_reg * torch.mean(torch.norm(point_delta, dim=-1) ** 2)
         total = data_loss + (shift_loss + point_loss)
+        if use_beads:
+            bead_proj = project_points(beads, projection)[bead_b, bead_t] + shifts[bead_t]
+            bead_norms = torch.norm(bead_proj - bead_uv, dim=-1)
+            total = total + s.fiducial_weight * F.smooth_l1_loss(
+                bead_norms, torch.zeros_like(bead_norms), beta=s.huber_delta, reduction="mean"
+            )
         with torch.no_grad():
             stats_history.append({"n_matches": n_matches, "rmse": torch.sqrt(torch.mean(norms**2)).item()})
         total.backward()
@@ -210,6 +272,7 @@ def greedy_bundle_adjustment(
     log(
         f"[bundle adjustment] {len(x_center)} points, {len(tilts)} tilts, max match distance "
         f"{s.max_match_distance} px, shift_reg {s.shift_reg}, point_reg {s.point_reg}"
+        + (f", {fiducials.n_beads} gold beads (weight {s.fiducial_weight})" if use_beads else "")
     )
     loss_history = []
     previous = None
@@ -244,6 +307,13 @@ def greedy_bundle_adjustment(
         point_loss = s.point_reg * torch.mean(torch.norm(points - points_init, dim=-1) ** 2).item()
         x_refined = center_to_corner_3d(points.detach().cpu().numpy(), tomogram_dims_zyx)
         translations = shifts.detach().cpu().numpy()
+        bead_out = {}
+        if use_beads:
+            bead_proj = project_points(beads, projection)[bead_b, bead_t] + shifts[bead_t]
+            bead_out = {
+                "fiducials_X": center_to_corner_3d(beads.detach().cpu().numpy(), tomogram_dims_zyx),
+                "fiducial_distances": torch.norm(bead_proj - bead_uv, dim=-1).cpu().numpy(),
+            }
     all_d = torch.cat(match_distances, dim=0) if match_distances else None
     return {
         "X": x_refined,
@@ -261,4 +331,5 @@ def greedy_bundle_adjustment(
             "mean_match_distance": all_d.mean().item() if all_d is not None else float("inf"),
             "max_match_distance": all_d.max().item() if all_d is not None else float("inf"),
         },
+        **bead_out,
     }

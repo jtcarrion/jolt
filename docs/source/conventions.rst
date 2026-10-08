@@ -80,6 +80,25 @@ Notes:
   tilt-stack order): Warp keeps IMOD's matrix and converts the shifts about its own image center, exactly as it
   did for the original etomo ``.xf``.
 
+Gold beads (fiducials)
+----------------------
+
+``jolt import --fiducials imod`` registers each tilt series' etomo bead model (``<ts>.fid``, tracked on the
+coarse-prealigned stack) together with its ``<ts>.prexg``. Every observation is mapped back to the raw frame (inverse
+``.prexg`` about ``(N - 1)/2``, after removing IMOD's +0.5 model convention) and written to
+``<project>/fiducials/<ts>_fiducials_2d.star`` with a ``rlnJoltBeadId`` column. ``joint_optimize`` maps them to the
+aligned frame with the ``.xf``, like the picks, and adds them to bundle adjustment with their **known tracks**:
+each bead is one 3D point refined together with the per-tilt shifts, and ``--fiducial_weight`` (default 1.0) times
+the mean Huber loss over bead observations is added to the pick term. Beads are never written to the particle STAR;
+they go to ``<ts>_fiducials.star`` (same output frame, with each bead's RMS residual), and ``run_status.json``
+records the bead RMS under the input and the refined alignment.
+
+On EMPIAR-10499 (00254–00258, half the beads anchoring and the other half held out for scoring), the refined
+alignment from any start (injected per-tilt errors of ±3/5/8 px, or a patch-tracking alignment at 2.3 px) reaches
+0.84–0.85 px held-out bead RMS, the same as a fit to the beads alone, where picks alone stop at 1.1–2.2 px. Recall
+of the particles also rises (by up to 6 points at 50 A). Removing Topaz picks near beads and a FOM-weighted second
+pass were tested and did not help.
+
 Image center
 ------------
 
@@ -95,8 +114,29 @@ Figure of merit
 
 ``rlnAutopickFigureOfMerit`` is ``0.96 geom + 0.01 (match_fraction + global_coverage + avg_dist_quality +
 rmse_quality)``, with ``geom = exp(-residual / 6)``. ``rlnJoltDetectorScore`` is the mean 2D detector score of
-the picks matched to the particle (in the 2D picker's own units) and ``rlnJoltResidual`` the reprojection
-residual in pixels used by the selection step (``--residual_threshold``).
+the picks matched to the particle (in the 2D picker's own units), ``rlnJoltResidual`` the reprojection residual in
+pixels and ``rlnJoltMatchedTilts`` the number of tilts it is computed over.
+
+The residual is the RMS distance from the particle's projections to the nearest pick over the **matched tilts**:
+the tilts with a pick within the match distance (``--match_distance``, 12 px), which are the tilts bundle
+adjustment fits. Tilts where the 2D picker found nothing near the particle do not count against it. Versions before
+0.0.1 used the RMS over all tilts and dropped particles above 12 px; on EMPIAR-10499 (four pick sets) and both CZI
+cohorts that gate removed true particles without improving precision (a picker trained only on low tilts lost 12
+points of recall at 50 A), and the matched residual ranks true above false particles better on every set (AUROC
++0.02 to +0.22). ``joint_optimize`` therefore applies no residual threshold unless ``--residual_threshold`` is set;
+rank and filter with the figure of merit (``jolt filter --min_fom``) instead.
+
+Choosing a FOM cut. FOM values cover a similar range on every dataset measured (10th-90th percentile about
+0.37-0.66 on CZI DS-10441 and EMPIAR-10499), so fixed cuts transfer:
+
+* ``--min_fom 0.4``: a near-lossless clean-up. It removed 3-24 % of the particles for at most 1 point of recall with
+  good picks (EMPIAR-10499, fine-tuned Topaz: recall at 50 A 74.7 -> 73.8 %, precision 23 -> 30 %; CZI F-beta1 rises
+  on both cohorts, F-beta4 changes by at most 0.012). A good default.
+* ``--min_fom 0.5``: about twice the precision for a recall cost (EMPIAR-10499 fine-tuned: precision 23 -> 54 %,
+  recall 75 -> 51 %; CZI fine-tuned precision 0.48 -> 0.64). For subtomogram averaging, where purity matters more
+  than count.
+* Above 0.55 few particles remain. Cutting does not rescue a weak 2D picker: with zero-shot Topaz picks on
+  EMPIAR-10499 no cut raises precision above 10 %.
 
 The residual (and so the selection), the FOM, its benchmark terms and the detector score project each
 particle with the alignment written to the refined ``.xf`` (the input alignment plus the shifts bundle

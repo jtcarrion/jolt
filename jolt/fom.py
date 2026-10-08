@@ -4,7 +4,10 @@ The FOM is the original JOLT "top-5" score, computed without ground truth::
 
     FOM = 0.96 geom + 0.01 (match_fraction + global_coverage + avg_dist_quality + rmse_quality)
 
-``geom = exp(-residual / rmse_scale)`` carries almost all of the discrimination. The four benchmark features
+``geom = exp(-residual / rmse_scale)`` carries almost all of the discrimination. The residual is the RMS
+distance to the nearest pick over the tilts where a pick is within the match distance (12 px, the tilts bundle
+adjustment fits; :func:`matched_residuals`), not over all tilts: the all-tilt RMS penalizes tilts where the 2D
+picker found nothing and ranks true particles worse on every dataset measured. The four benchmark features
 come from projecting every particle into every tilt and matching the projections one-to-one with the picks.
 
 Every projection includes the per-tilt shifts refined by bundle adjustment (``shifts_by_tilt``), so a particle
@@ -49,6 +52,54 @@ def _shift_for_tilt(shifts_by_tilt: dict[float, tuple[float, float]] | None, til
     return (float(dx), float(dy))
 
 
+def _nearest_pick_distances(
+    points_corner: np.ndarray,
+    coords_by_tilt: dict[float, np.ndarray],
+    tilts_file_order: list[float],
+    image_dims_hw: tuple[int, int],
+    tomogram_dims_zyx: tuple[int, int, int],
+    device=None,
+    shifts_by_tilt: dict[float, tuple[float, float]] | None = None,
+) -> np.ndarray:
+    """Distance from each point's projection (plus the tilt's shift) to the nearest pick, per tilt.
+
+    Returns an ``(N, n_tilts)`` array, NaN on tilts without picks.
+    """
+    x = np.asarray(points_corner, dtype=float)
+    n = x.shape[0]
+    dist = np.full((n, len(tilts_file_order)), np.nan, dtype=float)
+    if n == 0:
+        return dist
+    device = _device(device)
+    tomo_cx = (tomogram_dims_zyx[2] - 1) / 2.0
+    tomo_cy = (tomogram_dims_zyx[1] - 1) / 2.0
+    tomo_cz = (tomogram_dims_zyx[0] - 1) / 2.0
+    xc = x.copy()
+    xc[:, 0] -= tomo_cx
+    xc[:, 1] -= tomo_cy
+    xc[:, 2] -= tomo_cz
+    projected = project_points(
+        torch.as_tensor(xc, dtype=torch.float32, device=device),
+        tilt_projection_matrices(tilts_file_order, device=device),
+    )
+    keys = sorted(float(t) for t in coords_by_tilt.keys())
+    keys_arr = np.asarray(keys, dtype=float)
+    for v, tilt in enumerate(tilts_file_order):
+        if keys_arr.size == 0:
+            continue
+        i = int(np.argmin(np.abs(keys_arr - float(tilt))))
+        if abs(keys_arr[i] - float(tilt)) > 0.5:
+            continue
+        picks = coords_by_tilt[keys[i]]
+        if len(picks) == 0:
+            continue
+        raw = np.asarray([[p[0], p[1]] for p in picks], dtype=np.float32)
+        raw_t = torch.as_tensor(corner_to_center_2d_bottom_left(raw, image_dims_hw), dtype=torch.float32, device=device)
+        shift = torch.as_tensor(_shift_for_tilt(shifts_by_tilt, tilt), dtype=torch.float32, device=device)
+        dist[:, v] = torch.min(torch.cdist(projected[:, v, :] + shift, raw_t, p=2), dim=1)[0].detach().cpu().numpy()
+    return dist
+
+
 def reprojection_residuals(
     points_corner: np.ndarray,
     coords_by_tilt: dict[float, np.ndarray],
@@ -80,45 +131,48 @@ def reprojection_residuals(
     numpy.ndarray
         ``(N,)`` residuals in pixels (NaN for a point with no tilt to compare against).
     """
-    x = np.asarray(points_corner, dtype=float)
-    n = x.shape[0]
-    if n == 0:
-        return np.array([], dtype=float)
-    device = _device(device)
-    tomo_cx = (tomogram_dims_zyx[2] - 1) / 2.0
-    tomo_cy = (tomogram_dims_zyx[1] - 1) / 2.0
-    tomo_cz = (tomogram_dims_zyx[0] - 1) / 2.0
-    xc = x.copy()
-    xc[:, 0] -= tomo_cx
-    xc[:, 1] -= tomo_cy
-    xc[:, 2] -= tomo_cz
-    projected = project_points(
-        torch.as_tensor(xc, dtype=torch.float32, device=device),
-        tilt_projection_matrices(tilts_file_order, device=device),
+    dist = _nearest_pick_distances(
+        points_corner, coords_by_tilt, tilts_file_order, image_dims_hw, tomogram_dims_zyx, device, shifts_by_tilt
     )
-    keys = sorted(float(t) for t in coords_by_tilt.keys())
-    keys_arr = np.asarray(keys, dtype=float)
-    sum_sq = np.zeros(n, dtype=float)
-    count = np.zeros(n, dtype=int)
-    for v, tilt in enumerate(tilts_file_order):
-        if keys_arr.size == 0:
-            continue
-        i = int(np.argmin(np.abs(keys_arr - float(tilt))))
-        if abs(keys_arr[i] - float(tilt)) > 0.5:
-            continue
-        picks = coords_by_tilt[keys[i]]
-        if len(picks) == 0:
-            continue
-        raw = np.asarray([[p[0], p[1]] for p in picks], dtype=np.float32)
-        raw_t = torch.as_tensor(corner_to_center_2d_bottom_left(raw, image_dims_hw), dtype=torch.float32, device=device)
-        shift = torch.as_tensor(_shift_for_tilt(shifts_by_tilt, tilt), dtype=torch.float32, device=device)
-        min_d = torch.min(torch.cdist(projected[:, v, :] + shift, raw_t, p=2), dim=1)[0].detach().cpu().numpy()
-        sum_sq += min_d**2
-        count += 1
-    residuals = np.full(n, np.nan, dtype=float)
+    count = np.isfinite(dist).sum(axis=1)
+    residuals = np.full(dist.shape[0], np.nan, dtype=float)
     valid = count > 0
-    residuals[valid] = np.sqrt(sum_sq[valid] / count[valid])
+    residuals[valid] = np.sqrt(np.nansum(dist[valid] ** 2, axis=1) / count[valid])
     return residuals
+
+
+def matched_residuals(
+    points_corner: np.ndarray,
+    coords_by_tilt: dict[float, np.ndarray],
+    tilts_file_order: list[float],
+    image_dims_hw: tuple[int, int],
+    tomogram_dims_zyx: tuple[int, int, int],
+    match_distance: float,
+    device=None,
+    shifts_by_tilt: dict[float, tuple[float, float]] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """RMS distance to the nearest pick over the tilts where a pick is within ``match_distance``, and their count.
+
+    These are the tilts bundle adjustment fits (it matches each projection to its nearest pick within the same
+    distance), so this residual measures geometric fit, not pick coverage: a tilt where the 2D picker found nothing
+    near the particle does not count against it. On EMPIAR-10499 and CZI it ranks true particles above false ones
+    better than the all-tilt RMS (:func:`reprojection_residuals`) on every pick set measured (AUROC +0.02 to +0.22).
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(N,)`` residuals in pixels (``inf`` for a point with no matched tilt) and ``(N,)`` matched-tilt counts.
+    """
+    dist = _nearest_pick_distances(
+        points_corner, coords_by_tilt, tilts_file_order, image_dims_hw, tomogram_dims_zyx, device, shifts_by_tilt
+    )
+    matched = np.isfinite(dist) & (dist < float(match_distance))
+    count = matched.sum(axis=1)
+    residuals = np.full(dist.shape[0], np.inf, dtype=float)
+    valid = count > 0
+    squared = np.where(matched, dist, 0.0) ** 2
+    residuals[valid] = np.sqrt(squared[valid].sum(axis=1) / count[valid])
+    return residuals, count
 
 
 def _row_normalized_assignments(
@@ -371,6 +425,7 @@ def figure_of_merit(
     rmse_scale: float = 5.9999,
     device=None,
     shifts_by_tilt: dict[float, tuple[float, float]] | None = None,
+    match_distance: float | None = 12.0,
 ) -> dict:
     """Top-5 figure of merit and its components for a final set of points.
 
@@ -391,6 +446,9 @@ def figure_of_merit(
     shifts_by_tilt : dict of float to (float, float), optional
         Per-tilt shifts ``(dx, dy)`` (internal frame, y up) refined by bundle adjustment; every projection
         includes them. ``None`` scores against the input alignment.
+    match_distance : float or None
+        ``geom`` uses the residual over the tilts with a pick within this distance (:func:`matched_residuals`, the
+        tilts bundle adjustment fits); ``None`` uses the RMS over all tilts (versions before 0.0.1).
 
     Returns
     -------
@@ -403,9 +461,21 @@ def figure_of_merit(
     features = _benchmark_features(
         x, coords_by_tilt, tilts_file_order, image_dims_hw, tomogram_dims_zyx, shifts_by_tilt
     )
-    residuals = reprojection_residuals(
-        x, coords_by_tilt, tilts_file_order, image_dims_hw, tomogram_dims_zyx, device, shifts_by_tilt
-    )
+    if match_distance is None:
+        residuals = reprojection_residuals(
+            x, coords_by_tilt, tilts_file_order, image_dims_hw, tomogram_dims_zyx, device, shifts_by_tilt
+        )
+    else:
+        residuals, _ = matched_residuals(
+            x,
+            coords_by_tilt,
+            tilts_file_order,
+            image_dims_hw,
+            tomogram_dims_zyx,
+            match_distance,
+            device,
+            shifts_by_tilt,
+        )
     family = assignment_components(
         x,
         residuals,
