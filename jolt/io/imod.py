@@ -108,22 +108,33 @@ def write_xf(path: str | PathLike, rows: list[dict]) -> None:
             handle.write(f"{a11:.7f}   {a12:.7f}   {a21:.7f}   {a22:.7f}      {dx:.7f}      {dy:.7f}\n")
 
 
-def write_points_mod(path: str | PathLike, points_xyz: np.ndarray) -> None:
+def write_points_mod(
+    path: str | PathLike, points_xyz: np.ndarray, volume_dims_xyz: tuple[int, int, int] | None = None
+) -> None:
     """Write 3D points as one scattered-point object of an IMOD model (``.mod``) for viewing in ``3dmod``.
+
+    IMOD model coordinates place the center of voxel ``i`` at ``i + 0.5`` (a point on a 0-based voxel index ``i``
+    sits on the voxel center after adding 0.5), so 0.5 is added on every axis. The volume size is stamped in the
+    model header; otherwise 3dmod sizes the model from the bounding box of its points and can misplace it.
 
     Parameters
     ----------
     path : str or path-like
         Output ``.mod`` file.
     points_xyz : numpy.ndarray
-        ``(N, 3)`` coordinates in tomogram pixels (the same values as the particle STAR file).
+        ``(N, 3)`` coordinates in tomogram voxels, 0-based (the same values as the particle STAR file).
+    volume_dims_xyz : tuple of int, optional
+        Tomogram size in voxels, written to the model header.
     """
-    import imodmodel
     import pandas as pd
+    from imodmodel import ImodModel
 
-    pts = np.asarray(points_xyz, dtype=float).reshape(-1, 3)
+    pts = np.asarray(points_xyz, dtype=float).reshape(-1, 3) + 0.5
     frame = pd.DataFrame(
         {"object_id": 0, "contour_id": 0, "x": pts[:, 0], "y": pts[:, 1], "z": pts[:, 2]},
         index=range(len(pts)),
     )
-    imodmodel.write(frame, path)
+    model = ImodModel.from_dataframe(frame)
+    if volume_dims_xyz is not None:
+        model.header.xmax, model.header.ymax, model.header.zmax = (int(v) for v in volume_dims_xyz)
+    model.to_file(path)

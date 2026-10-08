@@ -91,3 +91,17 @@ def test_config_round_trip(tmp_path):
 def test_config_rejects_bad_dims(tmp_path):
     with pytest.raises(ValueError, match="tomo_dims_xyz"):
         config.validate({"config_version": 1, "project": {"tomo_dims_xyz": [1, 2]}, "tilt_series": {}})
+
+
+def test_points_mod_stamps_volume_size_and_uses_imod_voxel_centers(tmp_path):
+    import imodmodel
+    import numpy as np
+
+    from jolt.io.imod import write_points_mod
+
+    pts = np.array([[0.0, 0.0, 0.0], [10.0, 20.0, 30.0]])
+    write_points_mod(tmp_path / "p.mod", pts, (652, 630, 340))
+    back = imodmodel.read(tmp_path / "p.mod")
+    np.testing.assert_allclose(back[["x", "y", "z"]].to_numpy(float), pts + 0.5, atol=1e-5)
+    model = imodmodel.ImodModel.from_file(tmp_path / "p.mod")
+    assert (model.header.xmax, model.header.ymax, model.header.zmax) == (652, 630, 340)

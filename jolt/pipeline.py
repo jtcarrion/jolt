@@ -440,6 +440,7 @@ def run_tilt_series(
         write_points_mod(
             out / f"{inputs.name}_particles.mod",
             table[["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]].to_numpy(dtype=float),
+            (x_dim, y_dim, z_dim),
         )
     except ImportError as exc:  # imodmodel is a dependency; reported if an install lacks it
         log(f"[{inputs.name}] WARNING: IMOD model not written ({exc})")
