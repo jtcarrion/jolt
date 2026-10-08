@@ -84,3 +84,59 @@ def test_star_points_project_like_the_pipeline_frames():
     t = np.deg2rad(30.0)
     np.testing.assert_allclose(xy[0, 0], np.cos(t) * (120 - 127.5) + np.sin(t) * (10 - 29.5) + 127.5, atol=1e-9)
     np.testing.assert_allclose(xy[0, 1], 40.0, atol=1e-9)
+
+
+def test_teamtomo_frame_shifts_z_by_half_a_voxel_only_for_even_depth():
+    pts = np.array([[10.0, 20.0, 30.0], [300.0, 5.5, 99.25]])
+    even = geometry.output_frame_transform("teamtomo", (652, 630, 340), 10.0)
+    odd = geometry.output_frame_transform("teamtomo", (652, 630, 341), 10.0)
+    np.testing.assert_allclose(even.to_frame(pts), pts + [0.0, 0.0, 0.5])
+    np.testing.assert_allclose(odd.to_frame(pts), pts)
+
+
+def test_warp_frame_without_xml_dimensions_is_a_flip_about_nz_over_two():
+    f = geometry.output_frame_transform("warp", (652, 630, 340), 10.0)
+    pts = np.array([[10.0, 20.0, 30.0], [651.0, 629.0, 0.0]])
+    expected = pts.copy()
+    expected[:, 2] = 340 - 0.5 - pts[:, 2]
+    np.testing.assert_allclose(f.to_frame(pts), expected)
+    assert "exact binning" in f.source
+
+
+def test_warp_frame_matches_the_empiar_10499_bead_measurement():
+    # TS_00254: ImageDimensionsAngstrom 6526.519 x 6308.855, DimensionsAngstrom ... x 3401, 10 A/px, 652 x 630 x 340.
+    # Measured over 50 gold beads (Warp tomogram minus JOLT/IMOD frame, z mapped back as NZ - 1 - z):
+    # x +0.30 +0.00088 (x - 326), y +0.43 +0.00114 (y - 315), z -0.52 +0.0012 (z - 169.5).
+    f = geometry.output_frame_transform(
+        "warp",
+        (652, 630, 340),
+        10.0,
+        warp_image_dims_angstrom=(6526.519, 6308.855),
+        warp_volume_dims_angstrom=(6526.519, 6308.855, 3401.0),
+        image_rotation_deg=4.3,
+    )
+    pts = np.array([[326.0, 315.0, 169.5], [28.0, 45.0, 65.0], [626.0, 604.0, 300.0]])
+    out = f.to_frame(pts)
+    measured = np.column_stack(
+        [
+            pts[:, 0] + 0.30 + 0.00088 * (pts[:, 0] - 326),
+            pts[:, 1] + 0.43 + 0.00114 * (pts[:, 1] - 315),
+            339 - (pts[:, 2] - 0.52 + 0.0012 * (pts[:, 2] - 169.5)),
+        ]
+    )
+    np.testing.assert_allclose(out, measured, atol=0.15)
+
+
+def test_output_frames_round_trip():
+    rng = np.random.default_rng(0)
+    pts = rng.uniform(0, 600, size=(50, 3))
+    for frame in geometry.OUTPUT_FRAMES:
+        f = geometry.output_frame_transform(
+            frame,
+            (652, 630, 340),
+            10.0,
+            warp_image_dims_angstrom=(6526.5, 6308.9),
+            warp_volume_dims_angstrom=(6526.5, 6308.9, 3401.0),
+            image_rotation_deg=87.0,
+        )
+        np.testing.assert_allclose(f.from_frame(f.to_frame(pts)), pts, atol=1e-9)

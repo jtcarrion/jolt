@@ -21,9 +21,26 @@ Every center is ``((N - 1)/2)`` in 0-based pixel coordinates (an integer coordin
 as in Topaz and STAR files). This is the center IMOD's ``newstack -xf`` rotates about: measured with Gaussian
 blobs at known positions, its translations match ``(N - 1)/2`` to 0.003 px, while ``N/2`` is off by up to about
 0.45 px on rotated or reshaped canvases.
+
+Output frames
+-------------
+JOLT's 3D frame is the frame of IMOD (``tilt`` + ``clip rotx``), TeamTomo and the CZI portal tomograms, up to
+sub-voxel center conventions. Particle coordinates are written in one of two output frames
+(:func:`output_frame_transform`):
+
+``warp``
+    The frame of WarpTools ``ts_reconstruct`` tomograms, which is what ``ts_export_particles`` reads. Warp projects
+    with ``u = cos(theta) x - sin(theta) z`` (opposite depth sign), centers the volume at
+    ``volume_dimensions_angstrom / 2`` and maps its physical image frame onto the binned images with
+    ``SizeRoundingFactors``. Measured on EMPIAR-10499 gold beads (5 series, 50 beads) to about 0.1 voxel.
+``teamtomo``
+    The frame of TeamTomo ``torch-reconstruct-tomogram``: JOLT's frame with the volume center at ``N//2`` in z,
+    i.e. ``z + 0.5`` when ``NZ`` is even.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -267,3 +284,120 @@ def project_star_points_to_raw(
     center = corner_to_center_3d(pts, (z_dim, y_dim, x_dim))
     aligned = center_to_corner_2d_bottom_left(project_y_axis(center, tilt_deg), (y_dim, x_dim))
     return aligned_to_raw(aligned, xf_row, raw_dims_xy, (x_dim, y_dim))
+
+
+OUTPUT_FRAMES = ("warp", "teamtomo")
+
+
+@dataclass(frozen=True)
+class OutputFrame:
+    """Affine map between JOLT's 3D frame and an output frame (corner-frame voxels, STAR ``y`` down).
+
+    ``out_xy = center_out_xy + matrix_xy @ (in_xy - center_in_xy)`` and
+    ``out_z = center_out_z + z_factor * (in_z - center_in_z)``.
+    """
+
+    name: str
+    center_in: tuple[float, float, float]
+    center_out: tuple[float, float, float]
+    matrix_xy: tuple[tuple[float, float], tuple[float, float]]
+    z_factor: float
+    source: str
+
+    def to_frame(self, points_xyz: np.ndarray) -> np.ndarray:
+        """Convert ``(N, 3)`` points from JOLT's frame to this output frame."""
+        p = np.asarray(points_xyz, dtype=float).reshape(-1, 3)
+        c_in, c_out = np.asarray(self.center_in), np.asarray(self.center_out)
+        out = np.empty_like(p)
+        out[:, :2] = c_out[:2] + (p[:, :2] - c_in[:2]) @ np.asarray(self.matrix_xy).T
+        out[:, 2] = c_out[2] + self.z_factor * (p[:, 2] - c_in[2])
+        return out
+
+    def from_frame(self, points_xyz: np.ndarray) -> np.ndarray:
+        """Convert ``(N, 3)`` points from this output frame back to JOLT's frame."""
+        p = np.asarray(points_xyz, dtype=float).reshape(-1, 3)
+        c_in, c_out = np.asarray(self.center_in), np.asarray(self.center_out)
+        out = np.empty_like(p)
+        out[:, :2] = c_in[:2] + (p[:, :2] - c_out[:2]) @ np.linalg.inv(np.asarray(self.matrix_xy)).T
+        out[:, 2] = c_in[2] + (p[:, 2] - c_out[2]) / self.z_factor
+        return out
+
+    def describe(self) -> dict:
+        """JSON-ready description (recorded in ``run_status.json``)."""
+        return {
+            "name": self.name,
+            "center_in_xyz": [float(v) for v in self.center_in],
+            "center_out_xyz": [float(v) for v in self.center_out],
+            "matrix_xy": [[float(v) for v in row] for row in self.matrix_xy],
+            "z_factor": float(self.z_factor),
+            "source": self.source,
+        }
+
+
+def output_frame_transform(
+    frame: str,
+    tomo_dims_xyz: tuple[int, int, int],
+    pixel_size: float,
+    *,
+    warp_image_dims_angstrom: tuple[float, float] | None = None,
+    warp_volume_dims_angstrom: tuple[float, float, float] | None = None,
+    image_rotation_deg: float = 0.0,
+) -> OutputFrame:
+    """Transform from JOLT's 3D frame to the ``warp`` or ``teamtomo`` output frame.
+
+    Parameters
+    ----------
+    frame : {"warp", "teamtomo"}
+    tomo_dims_xyz : tuple of int
+        Tomogram dimensions in voxels at the tilt-stack pixel size (X, Y = aligned image size).
+    pixel_size : float
+        Tilt-stack (and tomogram) pixel size in Angstrom.
+    warp_image_dims_angstrom, warp_volume_dims_angstrom : tuple of float, optional
+        ``ImageDimensionsAngstrom`` and ``DimensionsAngstrom`` from the tilt series' Warp XML. Without them the
+        ``warp`` frame assumes exact binning (no sub-voxel offsets or scale) and says so in ``source``.
+    image_rotation_deg : float
+        In-plane rotation of the ``.xf`` (raw to aligned); turns Warp's raw-image scale into volume axes.
+
+    Returns
+    -------
+    OutputFrame
+    """
+    nx, ny, nz = (int(v) for v in tomo_dims_xyz)
+    p = float(pixel_size)
+    if frame == "teamtomo":
+        return OutputFrame(
+            name="teamtomo",
+            center_in=(0.0, 0.0, (nz - 1) / 2.0),
+            center_out=(0.0, 0.0, float(nz // 2)),
+            matrix_xy=((1.0, 0.0), (0.0, 1.0)),
+            z_factor=1.0,
+            source="TeamTomo volume center N//2 (z only; x, y image and volume centers cancel)",
+        )
+    if frame != "warp":
+        raise ValueError(f"unknown output frame {frame!r}; expected one of {OUTPUT_FRAMES}")
+    if warp_image_dims_angstrom is None or warp_volume_dims_angstrom is None:
+        image_phys = np.array([nx, ny], dtype=float) * p
+        volume_phys = np.array([nx, ny, nz], dtype=float) * p
+        source = "assumed exact binning (Warp XML has no ImageDimensionsAngstrom/DimensionsAngstrom)"
+    else:
+        image_phys = np.asarray(warp_image_dims_angstrom, dtype=float)
+        volume_phys = np.asarray(warp_volume_dims_angstrom, dtype=float)
+        source = "Warp XML ImageDimensionsAngstrom and DimensionsAngstrom"
+    if warp_image_dims_angstrom is None or warp_volume_dims_angstrom is None:
+        scale_img = np.ones(2)
+    else:
+        # Warp's binned image size and SizeRoundingFactors (TiltSeries.LoadMovieData; C# Math.Round, like np.round,
+        # rounds halves to even).
+        binned = np.round(image_phys / p / 2.0) * 2.0
+        scale_img = (image_phys / p) / binned  # = 1 / SizeRoundingFactors, per raw-image axis
+    a = np.deg2rad(float(image_rotation_deg))
+    rot = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+    m = rot @ np.diag(scale_img) @ rot.T
+    return OutputFrame(
+        name="warp",
+        center_in=(nx / 2.0, ny / 2.0, (nz - 1) / 2.0),
+        center_out=tuple(float(v) for v in volume_phys / (2.0 * p)),
+        matrix_xy=((float(m[0, 0]), float(m[0, 1])), (float(m[1, 0]), float(m[1, 1]))),
+        z_factor=-float(m[0, 0]),
+        source=source,
+    )
