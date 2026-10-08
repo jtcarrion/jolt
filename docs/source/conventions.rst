@@ -126,6 +126,18 @@ points of recall at 50 A), and the matched residual ranks true above false parti
 +0.02 to +0.22). ``joint_optimize`` therefore applies no residual threshold unless ``--residual_threshold`` is set;
 rank and filter with the figure of merit (``jolt filter --min_fom``) instead.
 
+Choosing a FOM cut. FOM values cover a similar range on every dataset measured (10th-90th percentile about
+0.37-0.66 on CZI DS-10441 and EMPIAR-10499), so fixed cuts transfer:
+
+* ``--min_fom 0.4``: a near-lossless clean-up. It removed 3-24 % of the particles for at most 1 point of recall with
+  good picks (EMPIAR-10499, fine-tuned Topaz: recall at 50 A 74.7 -> 73.8 %, precision 23 -> 30 %; CZI F-beta1 rises
+  on both cohorts, F-beta4 changes by at most 0.012). A good default.
+* ``--min_fom 0.5``: about twice the precision for a recall cost (EMPIAR-10499 fine-tuned: precision 23 -> 54 %,
+  recall 75 -> 51 %; CZI fine-tuned precision 0.48 -> 0.64). For subtomogram averaging, where purity matters more
+  than count.
+* Above 0.55 few particles remain. Cutting does not rescue a weak 2D picker: with zero-shot Topaz picks on
+  EMPIAR-10499 no cut raises precision above 10 %.
+
 The residual (and so the selection), the FOM, its benchmark terms and the detector score project each
 particle with the alignment written to the refined ``.xf`` (the input alignment plus the shifts bundle
 adjustment changed), and compare those projections with the picks in the picks' own frame. Versions before

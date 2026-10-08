@@ -26,7 +26,13 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
     parser.add_argument("-o", "--output", required=True, help="output STAR file for the selected particles")
 
     gates = parser.add_argument_group("Selection (each gate is off unless given)")
-    gates.add_argument("--min_fom", type=float, default=None, help="keep particles with figure of merit >= this")
+    gates.add_argument(
+        "--min_fom",
+        type=float,
+        default=None,
+        help="keep particles with figure of merit >= this. 0.4 is a near-lossless clean-up; 0.5 roughly doubles "
+        "precision at a recall cost (see the conventions page)",
+    )
     gates.add_argument(
         "--max_residual",
         type=float,

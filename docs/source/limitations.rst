@@ -20,5 +20,8 @@ Limitations
 * Without gold beads, the alignment refined from picks alone converges to about 1.3-2.2 px bead RMS on
   EMPIAR-10499 (limited by per-particle pick scatter): alignments worse than that improve, but picks alone cannot
   reach fiducial quality. Register beads with ``jolt import --fiducials imod`` when an etomo ``.fid`` exists.
+* With gold beads, the bundle-adjustment health check can flag ``shift_runaway`` when the beads legitimately correct
+  a few badly aligned tilts by several pixels (seen on patch-tracking alignments of EMPIAR-10499); check the bead RMS
+  in ``run_status.json`` (``fiducials``) before discarding such a series.
 * The ``teamtomo`` frame shows an unexplained ``+0.15 +/- 0.05`` voxel z residual against a TeamTomo reconstruction
   (one series). CZI ground truth sits 0.5 voxel below the ``teamtomo`` frame in z (see Conventions).
