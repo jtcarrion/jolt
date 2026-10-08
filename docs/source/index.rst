@@ -12,7 +12,7 @@ Workflow
    jolt import --warp_dir <warp_project> --project_dir <project> --tomo_dims_xyz X,Y,Z
    jolt finetune <project> --labels_3d particles.star --heldout_ts TS_1   # optional
    jolt detect_2d <project> --radius 8
-   jolt joint_optimize <project>
+   jolt joint_optimize <project>                       # --output_frame warp (default) or teamtomo
    jolt filter <project>/joint_optimize -o selected.star --min_fom 0.3
 
 Each command after ``import`` reads the project's ``jolt.yaml`` and records the parameters it used there.

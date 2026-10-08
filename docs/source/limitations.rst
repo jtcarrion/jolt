@@ -12,4 +12,10 @@ Limitations
   greedy bundle adjustment (which re-matches every particle to the picks itself) it had no effect on the
   output.
 * ``jolt finetune`` projects 3D labels with the project's geometry as recorded in ``jolt.yaml``; it does not
-  fit an unknown volume center, tilt sign or y flip.
+  fit an unknown volume center, tilt sign or y flip. Give ``--labels_frame`` the frame the labels are in.
+* The ``warp`` output frame's sub-voxel offsets and scale come from the Warp XML (``ImageDimensionsAngstrom``,
+  ``DimensionsAngstrom``). They were measured on one dataset with a small in-plane rotation (EMPIAR-10499,
+  4.3 degrees); for large rotations (e.g. a 90-degree canvas swap) the scale is rotated into volume axes as Warp's
+  code implies, which has not been measured yet.
+* The ``teamtomo`` frame shows an unexplained ``+0.15 +/- 0.05`` voxel z residual against a TeamTomo reconstruction
+  (one series). CZI ground truth sits 0.5 voxel below the ``teamtomo`` frame in z (see Conventions).
