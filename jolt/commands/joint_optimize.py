@@ -65,6 +65,20 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         help="radius of the soft pick assignment used by the figure of merit and the detector score (pixels)",
     )
 
+    optimization.add_argument(
+        "--fiducials",
+        choices=["anchor", "off"],
+        default="anchor",
+        help="gold beads registered with jolt import --fiducials: anchor = use them in bundle adjustment with their "
+        "known tracks (fixed correspondences), refined together with the per-tilt shifts; off = ignore them",
+    )
+    optimization.add_argument(
+        "--fiducial_weight",
+        type=float,
+        default=1.0,
+        help="weight of the gold-bead term relative to the picks (mean loss per bead observation vs per matched pick)",
+    )
+
     output = parser.add_argument_group("Output")
     output.add_argument(
         "--output_frame",
@@ -129,6 +143,7 @@ def main(args: argparse.Namespace) -> None:
             point_reg=args.point_reg,
             max_match_distance=args.match_distance,
             freeze_shifts=args.freeze_alignments,
+            fiducial_weight=args.fiducial_weight,
         ),
         residual_threshold=args.residual_threshold,
         fom_search_radius=args.fom_search_radius,
@@ -145,6 +160,9 @@ def main(args: argparse.Namespace) -> None:
             tlt=Path(entry["tlt"]),
             raw_dims_xy=tuple(entry["raw_dims_xy"]),
             tomo_dims_xyz=(x, y, z),
+            fiducials_2d=Path(entry["fiducials_2d"])
+            if args.fiducials == "anchor" and entry.get("fiducials_2d")
+            else None,
             output_frame=pipeline.output_frame_for(
                 args.output_frame, (x, y, z), entry["pixel_size"], entry["xf"], entry["tlt"], entry.get("xml")
             ),

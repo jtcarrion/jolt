@@ -17,5 +17,8 @@ Limitations
   ``DimensionsAngstrom``). They were measured on one dataset with a small in-plane rotation (EMPIAR-10499,
   4.3 degrees); for large rotations (e.g. a 90-degree canvas swap) the scale is rotated into volume axes as Warp's
   code implies, which has not been measured yet.
+* Without gold beads, the alignment refined from picks alone converges to about 1.3-2.2 px bead RMS on
+  EMPIAR-10499 (limited by per-particle pick scatter): alignments worse than that improve, but picks alone cannot
+  reach fiducial quality. Register beads with ``jolt import --fiducials imod`` when an etomo ``.fid`` exists.
 * The ``teamtomo`` frame shows an unexplained ``+0.15 +/- 0.05`` voxel z residual against a TeamTomo reconstruction
   (one series). CZI ground truth sits 0.5 voxel below the ``teamtomo`` frame in z (see Conventions).

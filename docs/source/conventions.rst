@@ -80,6 +80,25 @@ Notes:
   tilt-stack order): Warp keeps IMOD's matrix and converts the shifts about its own image center, exactly as it
   did for the original etomo ``.xf``.
 
+Gold beads (fiducials)
+----------------------
+
+``jolt import --fiducials imod`` registers each tilt series' etomo bead model (``<ts>.fid``, tracked on the
+coarse-prealigned stack) together with its ``<ts>.prexg``. Every observation is mapped back to the raw frame (inverse
+``.prexg`` about ``(N - 1)/2``, after removing IMOD's +0.5 model convention) and written to
+``<project>/fiducials/<ts>_fiducials_2d.star`` with a ``rlnJoltBeadId`` column. ``joint_optimize`` maps them to the
+aligned frame with the ``.xf``, like the picks, and adds them to bundle adjustment with their **known tracks**:
+each bead is one 3D point refined together with the per-tilt shifts, and ``--fiducial_weight`` (default 1.0) times
+the mean Huber loss over bead observations is added to the pick term. Beads are never written to the particle STAR;
+they go to ``<ts>_fiducials.star`` (same output frame, with each bead's RMS residual), and ``run_status.json``
+records the bead RMS under the input and the refined alignment.
+
+On EMPIAR-10499 (00254–00258, half the beads anchoring and the other half held out for scoring), the refined
+alignment from any start (injected per-tilt errors of ±3/5/8 px, or a patch-tracking alignment at 2.3 px) reaches
+0.84–0.85 px held-out bead RMS, the same as a fit to the beads alone, where picks alone stop at 1.1–2.2 px. Recall
+of the particles also rises (by up to 6 points at 50 A). Removing Topaz picks near beads and a FOM-weighted second
+pass were tested and did not help.
+
 Image center
 ------------
 

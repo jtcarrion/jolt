@@ -1,6 +1,10 @@
 # JOLT release notes
 
 ## Unreleased
+- Gold-bead anchors: `jolt import --fiducials imod` registers etomo `.fid` bead tracks; `joint_optimize`
+  (`--fiducials anchor`, `--fiducial_weight 1.0`) adds them to bundle adjustment with fixed correspondences and
+  writes `<ts>_fiducials.star`. On EMPIAR-10499 the refined alignment reaches the cross-validated bead floor
+  (0.84 px) from any start; picks alone stop at 1.1-2.2 px.
 - Residual and selection: the reprojection residual (`rlnJoltResidual`, the FOM's main term, near-duplicate tie
   breaking) is the RMS over the matched tilts (pick within `--match_distance`), and a new `rlnJoltMatchedTilts`
   column counts them. The 12 px residual gate is off by default (`--residual_threshold` is optional). **Changes the

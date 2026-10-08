@@ -71,6 +71,8 @@ class TiltSeriesInputs:
     #: Frame of the written particle coordinates (:func:`output_frame_for`); ``None`` keeps JOLT's own frame
     #: (the frame of IMOD and TeamTomo up to sub-voxel centers).
     output_frame: geometry.OutputFrame | None = None
+    #: Gold-bead observations in the raw frame (``jolt import --fiducials imod``); ``None``: no beads.
+    fiducials_2d: Path | None = None
 
 
 def output_frame_for(
@@ -97,6 +99,56 @@ def output_frame_for(
         warp_volume_dims_angstrom=volume_dims,
         image_rotation_deg=rotation,
     )
+
+
+def load_fiducial_tracks(
+    star_path: str | PathLike,
+    tilts_file: list[float],
+    xf_rows: list[dict],
+    ba_tilts: list[float],
+    raw_dims_xy: tuple[int, int],
+    aligned_dims_xy: tuple[int, int],
+) -> tuple[bundle_adjustment.FiducialTracks, np.ndarray]:
+    """Gold-bead observations (raw frame STAR from ``jolt import --fiducials``) as bundle-adjustment tracks.
+
+    Each observation is mapped to the aligned frame with its tilt's ``.xf`` row (like the picks) and then to the
+    internal centered frame. Observations on tilts without picks (not in ``ba_tilts``) are dropped. Returns the tracks
+    and the original bead id of each track index.
+    """
+    table = read_star_table(
+        star_path, required=["rlnMicrographName", "rlnCoordinateX", "rlnCoordinateY", "rlnJoltBeadId"]
+    )
+    rows_t, rows_b, rows_uv, ids = [], [], [], []
+    bead_ids = sorted(int(b) for b in table["rlnJoltBeadId"].unique())
+    remap = {b: i for i, b in enumerate(bead_ids)}
+    for name, x, y, b in zip(
+        table["rlnMicrographName"],
+        table["rlnCoordinateX"],
+        table["rlnCoordinateY"],
+        table["rlnJoltBeadId"],
+        strict=True,
+    ):
+        v = tilt_index_from_name(str(name)) - 1
+        tilt = float(tilts_file[v])
+        j = next((k for k, t in enumerate(ba_tilts) if abs(float(t) - tilt) < 0.01), None)
+        if j is None:
+            continue
+        aligned = geometry.raw_picks_to_aligned(
+            np.array([[float(x), float(y), 1.0]]), xf_rows[v], raw_dims_xy, aligned_dims_xy
+        )[0, :2]
+        uv = geometry.corner_to_center_2d_bottom_left(aligned[None], (aligned_dims_xy[1], aligned_dims_xy[0]))[0]
+        rows_t.append(j)
+        rows_b.append(remap[int(b)])
+        rows_uv.append(uv)
+    present = sorted(set(rows_b))
+    compact = {b: i for i, b in enumerate(present)}
+    tracks = bundle_adjustment.FiducialTracks(
+        tilt_index=np.asarray(rows_t, dtype=np.int64),
+        bead_index=np.asarray([compact[b] for b in rows_b], dtype=np.int64),
+        uv=np.asarray(rows_uv, dtype=float).reshape(-1, 2),
+    )
+    ids = np.asarray([bead_ids[b] for b in present], dtype=np.int64)
+    return tracks, ids
 
 
 def tilt_index_from_name(name: str) -> int:
@@ -275,6 +327,23 @@ def run_tilt_series(
 
     ba_tilts = sorted(coords.keys())
     shifts0 = np.zeros((len(ba_tilts), 2), dtype=np.float32)
+    tracks = bead_ids = None
+    if inputs.fiducials_2d is not None and s.bundle.fiducial_weight > 0:
+        tracks, bead_ids = load_fiducial_tracks(
+            inputs.fiducials_2d, tilts_file, disk_rows, ba_tilts, inputs.raw_dims_xy, (x_dim, y_dim)
+        )
+        _, d0 = bundle_adjustment.triangulate_tracks(tracks, ba_tilts) if tracks.n_beads else (None, np.zeros(0))
+        status["fiducials"] = {
+            "n_beads": tracks.n_beads,
+            "n_observations": int(len(tracks.uv)),
+            "weight": s.bundle.fiducial_weight,
+            "rmse_input_alignment_px": float(np.sqrt(np.mean(d0**2))) if len(d0) else None,
+        }
+        log(
+            f"[{inputs.name}] {tracks.n_beads} gold beads, {len(tracks.uv)} observations (anchors in bundle adjustment)"
+        )
+        if tracks.n_beads == 0:
+            tracks = None
     ba_status: dict = {"status": "not_run", "error": None}
     x_ba = shifts = None
     if len(x_init) == 0:
@@ -282,7 +351,16 @@ def run_tilt_series(
     else:
         try:
             ba = bundle_adjustment.greedy_bundle_adjustment(
-                x_init, coords, ba_tilts, shifts0, image_hw, tomo_zyx, s.bundle, device=device, log=log
+                x_init,
+                coords,
+                ba_tilts,
+                shifts0,
+                image_hw,
+                tomo_zyx,
+                s.bundle,
+                device=device,
+                log=log,
+                fiducials=tracks,
             )
             x_ba, shifts = ba["X"], ba["translations"]
             ba_status = bundle_adjustment_health(
@@ -452,6 +530,31 @@ def run_tilt_series(
         log(f"[{inputs.name}] WARNING: IMOD model not written ({exc})")
         status["mod_written"] = False
     status["n_particles"] = int(len(table))
+    if tracks is not None and x_ba is not None and "fiducials_X" in ba:
+        d1 = np.asarray(ba["fiducial_distances"], dtype=float)
+        status["fiducials"]["rmse_refined_px"] = float(np.sqrt(np.mean(d1**2)))
+        bead_xyz = np.asarray(ba["fiducials_X"], dtype=float).copy()
+        bead_xyz[:, 1] = float(y_dim - 1) - bead_xyz[:, 1]  # internal frame -> STAR frame (y down)
+        if inputs.output_frame is not None:
+            bead_xyz = inputs.output_frame.to_frame(bead_xyz)
+        per_bead = [float(np.sqrt(np.mean(d1[tracks.bead_index == b] ** 2))) for b in range(tracks.n_beads)]
+        write_star(
+            out / f"{inputs.name}_fiducials.star",
+            pd.DataFrame(
+                {
+                    "rlnCoordinateX": bead_xyz[:, 0],
+                    "rlnCoordinateY": bead_xyz[:, 1],
+                    "rlnCoordinateZ": bead_xyz[:, 2],
+                    "rlnMicrographName": f"{inputs.name}.tomostar",
+                    "rlnJoltBeadId": bead_ids,
+                    "rlnJoltResidual": per_bead,
+                }
+            ),
+        )
+        log(
+            f"[{inputs.name}] gold-bead RMS {status['fiducials']['rmse_input_alignment_px']:.3f} px "
+            f"(input alignment) -> {status['fiducials']['rmse_refined_px']:.3f} px (refined)"
+        )
     status["seconds"] = round(time.time() - t_start, 1)
     status["settings"] = asdict(s)
     with open(out / "run_status.json", "w") as handle:
