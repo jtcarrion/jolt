@@ -1,6 +1,11 @@
 # JOLT release notes
 
 ## Unreleased
+- Output frames: `joint_optimize --output_frame {warp,teamtomo}` (default `warp`, the frame of WarpTools tomograms
+  and of `ts_export_particles`, with Warp's sub-voxel centers and size-rounding scale read from the Warp XML) and
+  `finetune --labels_frame`. **Changes the default output**: earlier versions wrote JOLT's own frame, which is
+  mirrored in Z relative to Warp tomograms. The frame is recorded in `run_status.json`.
+- `.mod` files carry the tomogram size in the header and use IMOD's voxel-center convention (index + 0.5).
 - Port of the original JOLT pipeline: `import`, `finetune`, `detect_2d`, `joint_optimize` and `filter` are
   implemented. MLESAC initialization, greedy bundle adjustment of particles and per-tilt shifts, the top-5
   figure of merit with the detector score, residual/border/duplicate selection, refined `.xf` output.

@@ -29,10 +29,18 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
     source.add_argument(
         "--labels_3d",
         default=None,
-        help="known 3D particle positions (tomogram pixels, frame of the joint_optimize particle STAR files); "
-        "projected into every raw tilt image to make 2D labels",
+        help="known 3D particle positions (tomogram voxels at the tilt-stack pixel size, 0-based, in the frame "
+        "given by --labels_frame); projected into every raw tilt image to make 2D labels",
     )
     source.add_argument("--labels_2d", default=None, help="2D labels on the raw tilt images (pixels), used as they are")
+    labels.add_argument(
+        "--labels_frame",
+        choices=["warp", "teamtomo"],
+        default="warp",
+        help="coordinate frame of --labels_3d: warp (WarpTools tomograms, e.g. particles picked or refined on Warp "
+        "reconstructions; sub-voxel centers from each tilt series' Warp XML) or teamtomo (TeamTomo, IMOD clip rotx "
+        "and CZI portal tomograms). Same meaning as joint_optimize --output_frame",
+    )
 
     training = parser.add_argument_group("Training")
     training.add_argument("--heldout_ts", required=True, help="comma-separated tilt series held out for validation")
@@ -85,14 +93,20 @@ def _label_tables(spec: str, names: list[str]):
     return {name: table[keys == name].reset_index(drop=True) for name in names if (keys == name).any()}
 
 
-def labels_from_3d(table, entry: dict, tomo_dims_xyz):
-    """Project 3D labels into every raw tilt image; returns ``{0-based stack index: (n, 2) raw pixels}``."""
+def labels_from_3d(table, entry: dict, tomo_dims_xyz, frame=None):
+    """Project 3D labels into every raw tilt image; returns ``{0-based stack index: (n, 2) raw pixels}``.
+
+    ``frame`` (a :class:`jolt.geometry.OutputFrame`) converts the labels from their frame to JOLT's own frame first;
+    ``None`` means they are already in JOLT's frame.
+    """
     from jolt.geometry import project_star_points_to_raw
     from jolt.io import read_tlt, read_xf
 
     tilts = read_tlt(entry["tlt"])
     rows = read_xf(entry["xf"], tilts)
     xyz = table[["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]].to_numpy(dtype=float)
+    if frame is not None:
+        xyz = frame.from_frame(xyz)
     nx, ny = entry["raw_dims_xy"]
     out = {}
     for i, (tilt, row) in enumerate(zip(tilts, rows, strict=True)):
@@ -132,6 +146,7 @@ def main(args: argparse.Namespace) -> None:
     from jolt import topaz
     from jolt.commands.detect_2d import _devices
     from jolt.io import config, read_tlt
+    from jolt.pipeline import output_frame_for
     from jolt.utils import FileLog, parse_name_list
 
     project_dir = Path(args.project_dir)
@@ -162,7 +177,12 @@ def main(args: argparse.Namespace) -> None:
             continue
         entry = series[name]
         if args.labels_3d:
-            labels[name] = labels_from_3d(tables[name], entry, tomo_dims)
+            frame = output_frame_for(
+                args.labels_frame, tomo_dims, entry["pixel_size"], entry["xf"], entry["tlt"], entry.get("xml")
+            )
+            labels[name] = labels_from_3d(tables[name], entry, tomo_dims, frame)
+            if "exact binning" in frame.source and args.labels_frame == "warp":
+                log(f"[{name}] WARNING: Warp XML has no physical dimensions; warp labels assume exact binning")
         else:
             labels[name] = labels_from_2d(tables[name], int(entry["n_tilts"]))
         rows = [

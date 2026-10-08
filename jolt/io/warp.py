@@ -189,3 +189,19 @@ def discover(
     if errors:
         raise ValueError(f"{len(errors)} of {len(found)} tilt series failed the checks:\n  " + "\n  ".join(errors))
     return result
+
+
+def physical_dimensions(xml: str | PathLike) -> tuple[tuple[float, float] | None, tuple[float, float, float] | None]:
+    """``ImageDimensionsAngstrom`` and ``DimensionsAngstrom`` of a Warp tilt-series XML (``None`` if absent).
+
+    They define Warp's image and volume centers and its ``SizeRoundingFactors``, which the ``warp`` output frame
+    needs (:func:`jolt.geometry.output_frame_transform`).
+    """
+    import warpxmlfile
+
+    ts = warpxmlfile.read(Path(xml))
+    image = getattr(ts, "image_dimensions_angstrom", None)
+    volume = getattr(ts, "volume_dimensions_angstrom", None)
+    image = tuple(float(v) for v in image) if image is not None else None
+    volume = tuple(float(v) for v in volume) if volume is not None else None
+    return image, volume

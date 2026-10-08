@@ -63,6 +63,18 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         help="radius of the soft pick assignment used by the figure of merit and the detector score (pixels)",
     )
 
+    output = parser.add_argument_group("Output")
+    output.add_argument(
+        "--output_frame",
+        choices=["warp", "teamtomo"],
+        default="warp",
+        help="coordinate frame of the particle STAR and .mod files. warp: the frame of WarpTools ts_reconstruct "
+        "tomograms, read by ts_export_particles (use --coords_angpix <pixel size>); exact sub-voxel centers are "
+        "taken from each tilt series' Warp XML. teamtomo: the frame of TeamTomo torch-reconstruct-tomogram, which "
+        "also matches IMOD reconstructions rotated with clip rotx / trimvol -rx and the CZI portal tomograms "
+        "(mirrored in Z relative to warp)",
+    )
+
     execution = parser.add_argument_group("Execution")
     execution.add_argument("--ts", default=None, help="comma-separated tilt-series names to process (default: all)")
     execution.add_argument("--gpus", default=None, help="GPU indices to use, e.g. 0,1, or 'cpu' (default: all visible)")
@@ -131,6 +143,9 @@ def main(args: argparse.Namespace) -> None:
             tlt=Path(entry["tlt"]),
             raw_dims_xy=tuple(entry["raw_dims_xy"]),
             tomo_dims_xyz=(x, y, z),
+            output_frame=pipeline.output_frame_for(
+                args.output_frame, (x, y, z), entry["pixel_size"], entry["xf"], entry["tlt"], entry.get("xml")
+            ),
         )
         tasks.append(batch.Task(name, pipeline.run_tilt_series_logged, (inputs, str(out_root / name), settings)))
 
@@ -139,6 +154,13 @@ def main(args: argparse.Namespace) -> None:
     gpus = batch.visible_gpus(args.gpus)
     where = "GPUs " + ", ".join(gpus) if gpus else "CPU"
     log(f"joint_optimize: {len(tasks)} tilt series on {where} ({args.n_jobs or 'auto'} jobs)")
+    no_dims = [t.args[0].name for t in tasks if "exact binning" in t.args[0].output_frame.source]
+    log(f"output frame: {args.output_frame}")
+    if args.output_frame == "warp" and no_dims:
+        log(
+            f"WARNING: {len(no_dims)} tilt series have no ImageDimensionsAngstrom/DimensionsAngstrom in their Warp "
+            f"XML ({no_dims[:5]}); their warp-frame coordinates assume exact binning (no sub-voxel offsets)"
+        )
     outcomes = batch.run_tasks(tasks, gpus, args.n_jobs, args.worker_threads, log=log)
 
     summary = {}

@@ -63,20 +63,36 @@ def test_import_joint_optimize_filter(tmp_path):
         "--picks_2d",
         "warp_tiltseries/tiltstack/{ts}/{ts}_picks.star",
     )
-    jolt("joint_optimize", project, "--gpus", "cpu")
+    jolt("joint_optimize", project, "--gpus", "cpu")  # default output frame: warp
+    jolt("joint_optimize", project, "--gpus", "cpu", "--output_frame", "teamtomo", "--output_dir", project / "tt")
 
-    out = project / "joint_optimize" / "TS_1"
-    status = json.loads((out / "run_status.json").read_text())
-    assert status["ba"]["status"] == "ok"
-    particles = starfile.read(out / "TS_1_particles.star")
-    xyz = particles[["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]].to_numpy(float)
-    # Expected corner-frame positions in the STAR (y down) frame.
+    # Expected positions in JOLT's own corner frame (STAR, y down).
     x, y, z = TOMO_XYZ
     expected = true_center + np.array([(x - 1) / 2, (y - 1) / 2, (z - 1) / 2])
     expected[:, 1] = (y - 1) - expected[:, 1]
-    d, _ = cKDTree(expected).query(xyz)
-    assert len(xyz) >= 18 and np.all(d < 1.5)
-    assert (out / "TS_1_refined.xf").is_file() and (out / "TS_1_particles.mod").is_file()
+    # warp: this synthetic XML has no physical dimensions, so exact binning: z -> NZ - 0.5 - z.
+    # teamtomo: volume center NZ // 2, so z + 0.5 for the even depth used here.
+    in_warp = expected.copy()
+    in_warp[:, 2] = z - 0.5 - expected[:, 2]
+    in_teamtomo = expected + np.array([0.0, 0.0, 0.5])
+    for out, frame, truth in (
+        (project / "joint_optimize" / "TS_1", "warp", in_warp),
+        (project / "tt" / "TS_1", "teamtomo", in_teamtomo),
+    ):
+        status = json.loads((out / "run_status.json").read_text())
+        assert status["ba"]["status"] == "ok"
+        assert status["output_frame"]["name"] == frame
+        particles = starfile.read(out / "TS_1_particles.star")
+        xyz = particles[["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]].to_numpy(float)
+        d, _ = cKDTree(truth).query(xyz)
+        assert len(xyz) >= 18 and np.all(d < 1.5), frame
+        assert (out / "TS_1_refined.xf").is_file() and (out / "TS_1_particles.mod").is_file()
+    warp_xyz = starfile.read(project / "joint_optimize/TS_1/TS_1_particles.star")
+    tt_xyz = starfile.read(project / "tt/TS_1/TS_1_particles.star")
+    cols = ["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]
+    # Same particles, exactly mirrored in z between the frames: z_warp + z_teamtomo = NZ (= (NZ - 0.5) + 0.5).
+    np.testing.assert_allclose(warp_xyz[cols[:2]].to_numpy(float), tt_xyz[cols[:2]].to_numpy(float), atol=1e-6)
+    np.testing.assert_allclose(warp_xyz["rlnCoordinateZ"] + tt_xyz["rlnCoordinateZ"], z, atol=1e-5)
 
     jolt("filter", project / "joint_optimize", "-o", tmp_path / "selected.star", "--min_fom", "0.5")
     summary = json.loads((tmp_path / "selected.json").read_text())
