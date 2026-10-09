@@ -31,7 +31,7 @@ def _run(tmp_path, error, iterations, name):
     inputs = pipeline.TiltSeriesInputs("S", d / "picks.star", "raw", d / "s.xf", d / "s.tlt", (256, 256), TOMO_XYZ)
     settings = replace(pipeline.JointOptimizeSettings(), iterations=iterations)
     status = pipeline.run_tilt_series(inputs, d / "out", settings, device=torch.device("cpu"), log=lambda m: None)
-    xf = np.loadtxt(d / "out" / "S_refined.xf", ndmin=2)[:, 4:6]
+    xf = np.loadtxt(d / "out" / "S.xf", ndmin=2)[:, 4:6]
     left = xf - xf.mean(axis=0)  # truth is the identity; a common translation is a gauge freedom
     return status, float(np.sqrt(np.mean(np.sum(left**2, axis=1))))
 

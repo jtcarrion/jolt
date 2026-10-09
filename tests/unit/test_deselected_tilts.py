@@ -153,3 +153,58 @@ def test_finetune_skips_deselected_tilt_images(tmp_path):
     train_names = {w for w in train if w.startswith("TS_1_")}
     assert train_names == {f"TS_1_tilt_{i:02d}" for i in (1, 3, 4, 5)}
     assert {w for w in test if w.startswith("TS_2_")} == {f"TS_2_tilt_{i:02d}" for i in range(1, 6)}
+
+
+def test_warp_alignment_files(tmp_path):
+    from jolt.pipeline import write_warp_alignment
+
+    tlt = tmp_path / "in.tlt"
+    tlt.write_text("  -6.00\n -3.0\n   0.00\n  3.00\n6\n\n")  # odd formatting and a trailing blank line
+    rows = [dict(r, DX=float(i), DY=-float(i)) for i, r in enumerate(IDENTITY)]
+    info = write_warp_alignment(tmp_path, "TS_1", rows, tlt, deselected=(2, 5))
+    assert info == {"xf": "TS_1.xf", "tlt": "TS_1.tlt", "stack_positions": [1, 3, 4], "warp_in_use_tilts": None}
+    assert (tmp_path / "TS_1.tlt").read_text() == "  -6.00\n   0.00\n  3.00\n"  # verbatim lines, deselected left out
+    xf = np.loadtxt(tmp_path / "TS_1.xf")
+    np.testing.assert_allclose(xf[:, 4], [0.0, 2.0, 3.0])
+    write_warp_alignment(tmp_path, "TS_2", rows, tlt)
+    assert len((tmp_path / "TS_2.tlt").read_text().splitlines()) == 5
+    with pytest.raises(ValueError, match="tilt angles for 4"):
+        write_warp_alignment(tmp_path, "TS_3", rows[:4], tlt)
+
+
+def test_warp_alignment_row_count_must_match_warp(tmp_path):
+    from jolt.pipeline import write_warp_alignment
+
+    tlt = tmp_path / "in.tlt"
+    tlt.write_text("".join(f"{a}\n" for a in ANGLES))
+    info = write_warp_alignment(tmp_path, "TS_1", IDENTITY, tlt, deselected=(2,), expected_rows=4)
+    assert info["warp_in_use_tilts"] == 4 and len(info["stack_positions"]) == 4
+    with pytest.raises(ValueError, match="4 alignment rows but Warp has 5 tilts in use"):
+        write_warp_alignment(tmp_path, "TS_2", IDENTITY, tlt, deselected=(2,), expected_rows=5)
+
+
+def test_current_deselection_counts_and_guard(tmp_path, monkeypatch):
+    import warpxmlfile
+
+    from jolt.commands.joint_optimize import current_deselection
+    from jolt.io import warp as warp_module
+
+    _write_series(tmp_path, [True, False, True, True, True])
+    folder = tmp_path / "warp_tiltseries"
+    entry = {"xml": str(folder / "TS_1.xml"), "tlt": str(folder / "tiltstack/TS_1/TS_1.tlt"), "deselected_tilts": [2]}
+    assert current_deselection("TS_1", entry) == ((2,), 4, None)
+
+    # A stack written with only the used tilts: the XML has two extra unused entries; nothing is removed twice.
+    xml = warpxmlfile.read(folder / "TS_1.xml")
+    xml.angles = np.asarray([-12.0, -9.0] + ANGLES, dtype=float)
+    xml.use_tilt = np.asarray([False, False] + [True] * 5, dtype=bool)
+    for key in ("axis_angle", "axis_offset_x", "axis_offset_y"):
+        setattr(xml, key, np.zeros(7))
+    warpxmlfile.write(xml, folder / "TS_1.xml")
+    deselected, in_use, warning = current_deselection("TS_1", {**entry, "deselected_tilts": []})
+    assert deselected == () and in_use == 5 and warning is None
+
+    # Defensive guard: rows that would not match Warp's in-use count stop the run before anything is computed.
+    monkeypatch.setattr(warp_module, "deselected_stack_tilts", lambda *a: ([1], []))
+    with pytest.raises(SystemExit, match="Warp could not import"):
+        current_deselection("TS_1", entry)

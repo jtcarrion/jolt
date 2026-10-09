@@ -76,6 +76,8 @@ class TiltSeriesInputs:
     fiducials_2d: Path | None = None
     #: 1-based stack positions deselected in Warp (``UseTilt`` false); their picks (and beads) are ignored.
     deselected_tilts: tuple[int, ...] = ()
+    #: Tilts in use in the Warp XML; the refined ``<name>.xf``/``.tlt`` must have exactly this many rows.
+    warp_in_use_tilts: int | None = None
 
 
 def output_frame_for(
@@ -191,6 +193,50 @@ def tilt_index_from_name(name: str) -> int:
     raise ValueError(f"cannot read a tilt index from tilt-image name {name!r} (expected e.g. TS_01 or tilt_01.mrc)")
 
 
+def write_warp_alignment(
+    output_dir: str | PathLike,
+    name: str,
+    rows: list[dict],
+    tlt: str | PathLike,
+    deselected: tuple[int, ...] = (),
+    expected_rows: int | None = None,
+) -> dict:
+    """Write the refined alignment as ``<name>.xf`` and ``<name>.tlt``, ready for Warp's ``ts_import_alignments``.
+
+    Warp maps the rows of both files onto its in-use tilts (``UseTilt``), so tilt images deselected in Warp are
+    left out of both: with one row per stack image Warp would re-enable every tilt (``.xf``) or keep its old
+    angles (``.tlt``) without saying so. The ``.tlt`` lines are copied verbatim from the stack's own ``.tlt``;
+    JOLT never changes tilt angles. Point ``ts_import_alignments --alignments`` at the folder holding the
+    per-series output folders (``<project>/joint_optimize``).
+
+    Returns
+    -------
+    dict
+        File names and the 1-based stack positions the rows belong to (recorded in ``run_status.json``).
+
+    Raises
+    ------
+    ValueError
+        If the ``.tlt`` and ``.xf`` disagree, or the row count is not ``expected_rows`` (the Warp in-use count).
+    """
+    out = Path(output_dir)
+    lines = [line for line in Path(tlt).read_text().splitlines() if line.strip()]
+    if len(lines) != len(rows):
+        raise ValueError(f"{tlt}: {len(lines)} tilt angles for {len(rows)} .xf rows")
+    skip = {int(i) for i in deselected}
+    keep = [k for k in range(len(rows)) if k + 1 not in skip]
+    if expected_rows is not None and len(keep) != int(expected_rows):
+        raise ValueError(f"{name}: {len(keep)} alignment rows but Warp has {expected_rows} tilts in use")
+    write_xf(out / f"{name}.xf", [rows[k] for k in keep])
+    (out / f"{name}.tlt").write_text("".join(f"{lines[k]}\n" for k in keep))
+    return {
+        "xf": f"{name}.xf",
+        "tlt": f"{name}.tlt",
+        "stack_positions": [k + 1 for k in keep],
+        "warp_in_use_tilts": expected_rows,
+    }
+
+
 def load_picks(
     star_path: str | PathLike,
     tilt_angles: list[float],
@@ -298,8 +344,9 @@ def run_tilt_series(
 ) -> dict:
     """Run ``joint_optimize`` on one tilt series and write its outputs.
 
-    Outputs in ``output_dir``: ``<name>_particles.star``, ``<name>_particles.mod``, ``<name>_refined.xf``
-    (only when bundle adjustment succeeded) and ``run_status.json``.
+    Outputs in ``output_dir``: ``<name>_particles.star``, ``<name>_particles.mod``, the refined alignment
+    ``<name>.xf`` with its tilt angles ``<name>.tlt`` (only when bundle adjustment succeeded; see
+    :func:`write_warp_alignment`) and ``run_status.json``.
 
     Returns
     -------
@@ -487,7 +534,9 @@ def run_tilt_series(
     else:
         final_rows = None
     if final_rows is not None:
-        write_xf(out / f"{inputs.name}_refined.xf", final_rows)
+        status["warp_alignment"] = write_warp_alignment(
+            out, inputs.name, final_rows, inputs.tlt, inputs.deselected_tilts, inputs.warp_in_use_tilts
+        )
         status["xf_shift_change_px"] = {
             "dx": [float(r["DX"]) - float(d["DX"]) for r, d in zip(final_rows, input_rows, strict=True)],
             "dy": [float(r["DY"]) - float(d["DY"]) for r, d in zip(final_rows, input_rows, strict=True)],
