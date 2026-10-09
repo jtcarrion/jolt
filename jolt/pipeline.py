@@ -74,6 +74,8 @@ class TiltSeriesInputs:
     output_frame: geometry.OutputFrame | None = None
     #: Gold-bead observations in the raw frame (``jolt import --fiducials imod``); ``None``: no beads.
     fiducials_2d: Path | None = None
+    #: 1-based stack positions deselected in Warp (``UseTilt`` false); their picks (and beads) are ignored.
+    deselected_tilts: tuple[int, ...] = ()
 
 
 def output_frame_for(
@@ -196,12 +198,14 @@ def load_picks(
     xf_rows: list[dict],
     raw_dims_xy: tuple[int, int],
     aligned_dims_xy: tuple[int, int],
+    deselected: tuple[int, ...] = (),
 ) -> dict[float, np.ndarray]:
     """Read 2D picks into ``{tilt angle: (n, 3) array of x, y, score}`` in the aligned frame.
 
     Tilt images are identified by their stack index (see :func:`tilt_index_from_name`), and the angle is the
     ``.tlt`` entry at that index. The dictionary follows the order in which tilt images first appear in the
-    STAR file. Picks made on the raw stack are mapped with :func:`jolt.geometry.raw_picks_to_aligned`.
+    STAR file. Picks made on the raw stack are mapped with :func:`jolt.geometry.raw_picks_to_aligned`. Picks on
+    the ``deselected`` stack positions (1-based) are dropped, so those tilts take no part in the reconstruction.
     """
     table = read_star_table(star_path, required=["rlnMicrographName", "rlnCoordinateX", "rlnCoordinateY"])
     if "rlnAutopickFigureOfMerit" in table.columns:
@@ -210,15 +214,17 @@ def load_picks(
         scores = np.full(len(table), 0.99, dtype=float)
     xy = table[["rlnCoordinateX", "rlnCoordinateY"]].to_numpy(dtype=float)
     groups: dict[float, list[int]] = {}
-    index_cache: dict[str, float] = {}
+    index_cache: dict[str, float | None] = {}
+    skip = {int(i) for i in deselected}
     for row, name in enumerate(table["rlnMicrographName"].astype(str)):
-        tilt = index_cache.get(name)
-        if tilt is None:
+        if name not in index_cache:
             idx = tilt_index_from_name(name)
             if not 1 <= idx <= len(tilt_angles):
                 raise ValueError(f"{star_path}: tilt index {idx} of {name!r} is outside 1..{len(tilt_angles)}")
-            tilt = float(tilt_angles[idx - 1])
-            index_cache[name] = tilt
+            index_cache[name] = None if idx in skip else float(tilt_angles[idx - 1])
+        tilt = index_cache[name]
+        if tilt is None:
+            continue
         groups.setdefault(tilt, []).append(row)
     picks = {}
     for tilt, rows in groups.items():
@@ -312,13 +318,27 @@ def run_tilt_series(
 
     tilts_file = [float(t) for t in read_tlt(inputs.tlt)]
     disk_rows = read_xf(inputs.xf, tilts_file)
+    if inputs.deselected_tilts:
+        status["deselected_tilts"] = [
+            {"stack_position": int(i), "tilt_angle": tilts_file[int(i) - 1]} for i in inputs.deselected_tilts
+        ]
+        log(
+            f"[{inputs.name}] ignoring {len(inputs.deselected_tilts)} tilt image(s) deselected in Warp: "
+            + ", ".join(f"#{i} ({tilts_file[int(i) - 1]:+.2f} deg)" for i in inputs.deselected_tilts)
+        )
     input_rows = disk_rows
     n_iter = max(1, int(s.iterations))
     iterations: list[dict] = []
     refined_rows = None
     for iteration in range(n_iter):
         coords = load_picks(
-            inputs.picks_2d, tilts_file, inputs.picks_frame, disk_rows, inputs.raw_dims_xy, (x_dim, y_dim)
+            inputs.picks_2d,
+            tilts_file,
+            inputs.picks_frame,
+            disk_rows,
+            inputs.raw_dims_xy,
+            (x_dim, y_dim),
+            deselected=inputs.deselected_tilts,
         )
         n_picks = int(sum(len(v) for v in coords.values()))
         log(f"[{inputs.name}] {n_picks} picks on {len(coords)} tilt images ({inputs.picks_frame} frame)")

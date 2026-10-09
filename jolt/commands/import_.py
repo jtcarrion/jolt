@@ -125,9 +125,16 @@ def main(args: argparse.Namespace) -> None:
             "xf": str(ts.xf),
             "tlt": str(ts.tlt),
             "n_tilts": ts.n_tilts,
+            "deselected_tilts": list(ts.deselected_tilts),
             "raw_dims_xy": list(ts.raw_dims_xy),
             "pixel_size": ts.pixel_size,
         }
+        if ts.deselected_tilts:
+            listed = ", ".join(f"#{i} ({ts.tilt_angles[i - 1]:+.2f} deg)" for i in ts.deselected_tilts)
+            print(
+                f"{ts.name}: {len(ts.deselected_tilts)} tilt image(s) deselected in Warp ({listed}); "
+                "joint_optimize ignores their picks"
+            )
         if len(set(ts.tilt_angles)) != len(ts.tilt_angles):
             problems.append(f"{ts.name}: the .tlt lists the same tilt angle more than once")
         if ts.aligned_stack is not None:
