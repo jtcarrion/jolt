@@ -26,9 +26,12 @@ the ``.xf`` (or the stack, or the Warp ``UseTilt`` count) stops ``jolt import``.
 Refined alignment
 -----------------
 
-``joint_optimize`` writes ``<TS>_refined.xf``: every input row with its translation changed by the shift that
-bundle adjustment found, in the correction convention IMOD's ``newstack -xf`` applies. Rows keep the input
-order. If bundle adjustment fails, no refined ``.xf`` is written (``run_status.json`` says so).
+``joint_optimize`` writes ``<TS>.xf`` and ``<TS>.tlt`` in ``<project>/joint_optimize/<TS>/``: every input row with
+its translation changed by the shift that bundle adjustment found, in the correction convention IMOD's
+``newstack -xf`` applies, and the stack's own ``.tlt`` lines copied verbatim (JOLT never changes tilt angles). Rows
+keep the input order. Tilt images deselected in Warp (``UseTilt``) are left out of both files, because Warp maps
+the rows onto its in-use tilts (``run_status.json`` lists the stack positions written). If bundle adjustment fails,
+neither file is written (``run_status.json`` says so).
 
 Output frame
 ------------
@@ -75,10 +78,11 @@ Notes:
   ``--output_frame teamtomo``; the 0.5-voxel (5 A) offset is far below the scoring radii.
 * Every run records its frame (centers, matrix, z factor and where the values came from) in
   ``run_status.json``, and the frame name in ``summary.json``.
-* The refined ``.xf`` does not depend on the output frame. It imports into Warp as-is
-  (``ts_import_alignments --alignment_angpix <pixel size>``; rows follow the stack order, which must be Warp's
-  tilt-stack order): Warp keeps IMOD's matrix and converts the shifts about its own image center, exactly as it
-  did for the original etomo ``.xf``.
+* The refined ``.xf`` does not depend on the output frame. The output folder imports into Warp as-is
+  (``ts_import_alignments --alignments <project>/joint_optimize --alignment_angpix <pixel size>``, then ``ts_ctf``
+  before ``ts_reconstruct``; rows follow the stack order, which must be Warp's tilt-stack order): Warp reads
+  ``<TS>/<TS>.xf`` and ``<TS>/<TS>.tlt``, keeps IMOD's matrix and converts the shifts about its own image center,
+  exactly as it did for the original etomo ``.xf``, and takes the tilt angles from the ``.tlt``.
 
 Gold beads (fiducials)
 ----------------------

@@ -86,7 +86,8 @@ def test_import_joint_optimize_filter(tmp_path):
         xyz = particles[["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]].to_numpy(float)
         d, _ = cKDTree(truth).query(xyz)
         assert len(xyz) >= 18 and np.all(d < 1.5), frame
-        assert (out / "TS_1_refined.xf").is_file() and (out / "TS_1_particles.mod").is_file()
+        assert (out / "TS_1.xf").is_file() and (out / "TS_1_particles.mod").is_file()
+        assert (out / "TS_1.tlt").read_text() == (tmp_path / "warp/warp_tiltseries/tiltstack/TS_1/TS_1.tlt").read_text()
     warp_xyz = starfile.read(project / "joint_optimize/TS_1/TS_1_particles.star")
     tt_xyz = starfile.read(project / "tt/TS_1/TS_1_particles.star")
     cols = ["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]

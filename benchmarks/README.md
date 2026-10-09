@@ -8,7 +8,7 @@ jolt import --warp_dir tests/data/czi_TS_5 --project_dir ts5_check --tomo_dims_x
     --picks_2d "warp_tiltseries/tiltstack/{ts}/{ts}_topaz_picks.star"
 jolt joint_optimize ts5_check --output_frame teamtomo   # CZI tomograms and ground truth share TeamTomo's hand
 python benchmarks/compare_to_reference.py --new ts5_check/joint_optimize --ref <reference_run> --ts 5 \
-    --new_star_name "{ts}_particles.star" --new_xf_name "{ts}_refined.xf" --cols rlnAutopickFigureOfMerit
+    --new_star_name "{ts}_particles.star" --new_xf_name "{ts}.xf" --cols rlnAutopickFigureOfMerit
 ```
 
 `compare_to_reference.py` compares, per tilt series, the 3D coordinate sets (rounded, so row order cannot cause

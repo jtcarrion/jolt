@@ -120,6 +120,54 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
     return parser
 
 
+def current_deselection(name: str, entry: dict) -> tuple[tuple[int, ...], int | None, str | None]:
+    """Deselected stack positions from the Warp XML as it is now, Warp's in-use tilt count, and a warning.
+
+    The refined ``<TS>.xf``/``<TS>.tlt`` must match the ``UseTilt`` state Warp has when they are imported, so the
+    XML (read with ``warpxmlfile``) is re-read here; tilts deselected in Warp after ``jolt import`` are honored.
+    The rows JOLT writes (stack images minus deselected ones) must equal the XML's in-use count: a stack written
+    with only the used tilts has nothing removed a second time. Without a readable XML the deselection recorded
+    by ``jolt import`` is used and the count is not checked (``None``).
+
+    Raises
+    ------
+    SystemExit
+        If the rows JOLT would write do not match the number of tilts the XML has in use.
+    """
+    from pathlib import Path
+
+    import numpy as np
+
+    from jolt.io import read_tlt, warp
+
+    recorded = tuple(int(i) for i in entry.get("deselected_tilts", []))
+    xml = entry.get("xml")
+    if not xml or not Path(xml).is_file():
+        return recorded, None, None
+    import warpxmlfile
+
+    xml_ts = warpxmlfile.read(xml)
+    use_tilt = np.asarray(xml_ts.use_tilt, dtype=bool)
+    stack_angles = [float(t) for t in read_tlt(entry["tlt"])]
+    found, _ = warp.deselected_stack_tilts(
+        name, Path(xml).name, stack_angles, np.asarray(xml_ts.angles, dtype=float), use_tilt
+    )
+    now = tuple(found)
+    in_use = int(use_tilt.sum())
+    if len(stack_angles) - len(now) != in_use:
+        raise SystemExit(
+            f"{name}: {len(stack_angles)} stack images minus {len(now)} deselected = {len(stack_angles) - len(now)} "
+            f"rows, but {Path(xml).name} has {in_use} tilts in use; Warp could not import the refined alignment"
+        )
+    warning = None
+    if now != recorded:
+        warning = (
+            f"WARNING: {name}: the Warp XML now deselects stack positions {list(now)} (jolt.yaml: {list(recorded)}); "
+            "using the XML, which is what Warp will apply when the alignment is imported"
+        )
+    return now, in_use, warning
+
+
 def main(args: argparse.Namespace) -> None:
     """Run ``jolt joint_optimize``."""
     import json
@@ -160,9 +208,12 @@ def main(args: argparse.Namespace) -> None:
         fom_search_radius=args.fom_search_radius,
     )
     x, y, z = cfg["project"]["tomo_dims_xyz"]
-    tasks = []
+    tasks, deselection_warnings = [], []
     for name in names:
         entry = series[name]
+        deselected, in_use, warning = current_deselection(name, entry)
+        if warning:
+            deselection_warnings.append(warning)
         inputs = pipeline.TiltSeriesInputs(
             name=name,
             picks_2d=Path(entry["picks_2d"]),
@@ -177,7 +228,8 @@ def main(args: argparse.Namespace) -> None:
             output_frame=pipeline.output_frame_for(
                 args.output_frame, (x, y, z), entry["pixel_size"], entry["xf"], entry["tlt"], entry.get("xml")
             ),
-            deselected_tilts=tuple(entry.get("deselected_tilts", [])),
+            deselected_tilts=deselected,
+            warp_in_use_tilts=in_use,
         )
         tasks.append(batch.Task(name, pipeline.run_tilt_series_logged, (inputs, str(out_root / name), settings)))
 
@@ -187,6 +239,8 @@ def main(args: argparse.Namespace) -> None:
     where = "GPUs " + ", ".join(gpus) if gpus else "CPU"
     log(f"joint_optimize: {len(tasks)} tilt series on {where} ({args.n_jobs or 'auto'} jobs)")
     no_dims = [t.args[0].name for t in tasks if "exact binning" in t.args[0].output_frame.source]
+    for warning in deselection_warnings:
+        log(warning)
     log(f"output frame: {args.output_frame}")
     if args.output_frame == "warp" and no_dims:
         log(
@@ -210,6 +264,14 @@ def main(args: argparse.Namespace) -> None:
         log(
             f"ATTENTION {name}: "
             + (s["error"] if "error" in s else f"bundle adjustment {s['ba_status']}, FOM {s['fom_status']}")
+        )
+    with_xf = [n for n in summary if (out_root / n / f"{n}.xf").is_file()]
+    if with_xf:
+        sizes = sorted({float(series[n]["pixel_size"]) for n in with_xf})
+        log(
+            f"refined alignments for {len(with_xf)} of {len(summary)} tilt series; to use them in Warp: "
+            f"WarpTools ts_import_alignments --settings <warp_tiltseries.settings> --alignments {out_root.resolve()} "
+            f"--alignment_angpix {' or '.join(f'{v:g}' for v in sizes)} (then rerun ts_ctf before ts_reconstruct)"
         )
     n_particles = sum(s.get("n_particles", 0) for s in summary.values())
     log(
