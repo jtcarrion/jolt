@@ -44,6 +44,9 @@ class TiltSeries:
         Tilt-stack pixel size in Angstrom (from the ``.st`` header).
     tilt_angles : list of float
         Angles from the ``.tlt``, in stack order.
+    deselected_tilts : list of int
+        1-based stack positions of the tilt images deselected in Warp (``UseTilt`` false in the ``.xml``); JOLT
+        ignores their picks. Empty when every stack image is used.
     warnings : list of str
         Non-fatal inconsistencies found while checking.
     """
@@ -58,6 +61,7 @@ class TiltSeries:
     n_tilts: int
     pixel_size: float
     tilt_angles: list[float]
+    deselected_tilts: list[int] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -80,6 +84,57 @@ def find_tilt_series_names(xml_path: Path, tiltstack_path: Path) -> list[str]:
     xml_names = {p.stem for p in xml_path.glob("*.xml")}
     folder_names = {p.name for p in tiltstack_path.iterdir() if p.is_dir()} if tiltstack_path.is_dir() else set()
     return sorted(xml_names & folder_names)
+
+
+def deselected_stack_tilts(
+    name: str, xml_name: str, stack_angles: list[float], xml_angles: np.ndarray, use_tilt: np.ndarray
+) -> tuple[list[int], list[str]]:
+    """Find the stack images deselected in Warp; returns ``(1-based stack positions, warnings)``.
+
+    Two layouts of a Warp ``.xml`` are accepted. Usually it lists every stack image, in stack order, and images
+    deselected in Warp after the stack was written have ``UseTilt`` false. Otherwise the stack may hold only the used
+    tilts, so the ``.xml`` has more entries than the stack, and nothing in the stack is deselected. When the ``.xml``
+    order differs from the stack, images are matched by angle; a deselection that cannot be matched unambiguously
+    is an error rather than a guess.
+
+    Raises
+    ------
+    ValueError
+        If neither layout fits, a deselected image cannot be identified, or every image is deselected.
+    """
+    angles = np.asarray(stack_angles, dtype=float)
+    nz = len(angles)
+    warnings: list[str] = []
+    if len(xml_angles) == nz:
+        order = np.arange(nz)
+        if nz and float(np.max(np.abs(xml_angles - angles))) > ANGLE_TOLERANCE_DEG:
+            nearest = np.array([int(np.argmin(np.abs(xml_angles - a))) for a in angles], dtype=int)
+            unique = len(set(nearest.tolist())) == nz
+            close = nz and float(np.max(np.abs(xml_angles[nearest] - angles))) <= ANGLE_TOLERANCE_DEG
+            order = nearest if unique and close else None
+        if order is None:
+            if not use_tilt.all():
+                raise ValueError(
+                    f"{name}: {xml_name} deselects tilts (UseTilt) but its angles do not match the .tlt within "
+                    f"{ANGLE_TOLERANCE_DEG} deg, so the deselected stack images cannot be identified"
+                )
+            worst = float(np.max(np.abs(np.sort(xml_angles) - np.sort(angles))))
+            warnings.append(f"{name}: .xml and .tlt tilt angles differ by up to {worst:.2f} deg")
+            return [], warnings
+        deselected = [k + 1 for k in range(nz) if not use_tilt[order[k]]]
+        if nz and len(deselected) == nz:
+            raise ValueError(f"{name}: {xml_name} deselects every tilt (UseTilt)")
+        return deselected, warnings
+    if int(use_tilt.sum()) == nz:
+        used_angles = xml_angles[use_tilt]
+        worst = float(np.max(np.abs(np.sort(used_angles) - np.sort(angles)))) if nz else 0.0
+        if worst > ANGLE_TOLERANCE_DEG:
+            warnings.append(f"{name}: .xml and .tlt tilt angles differ by up to {worst:.2f} deg")
+        return [], warnings
+    raise ValueError(
+        f"{name}: {xml_name} lists {len(xml_angles)} tilts ({int(use_tilt.sum())} used, UseTilt) but the stack has "
+        f"{nz} images"
+    )
 
 
 def check_tilt_series(name: str, xml_path: Path, tiltstack_path: Path) -> TiltSeries:
@@ -111,17 +166,10 @@ def check_tilt_series(name: str, xml_path: Path, tiltstack_path: Path) -> TiltSe
     if nz != len(angles):
         raise ValueError(f"{name}: {raw_stack.name} has {nz} images but {tlt.name} has {len(angles)} angles")
 
-    warnings = []
     xml_ts = warpxmlfile.read(xml)
-    used = np.asarray(xml_ts.use_tilt, dtype=bool)
-    xml_angles = np.asarray(xml_ts.angles, dtype=float)[used]
-    if len(xml_angles) != nz:
-        raise ValueError(
-            f"{name}: {xml.name} marks {len(xml_angles)} tilts as used (UseTilt) but the stack has {nz} images"
-        )
-    worst = float(np.max(np.abs(np.sort(xml_angles) - np.sort(angles)))) if nz else 0.0
-    if worst > ANGLE_TOLERANCE_DEG:
-        warnings.append(f"{name}: .xml and .tlt tilt angles differ by up to {worst:.2f} deg")
+    deselected, warnings = deselected_stack_tilts(
+        name, xml.name, angles, np.asarray(xml_ts.angles, dtype=float), np.asarray(xml_ts.use_tilt, dtype=bool)
+    )
     if aligned_stack is not None:
         anx, any_, anz = read_header_dims(aligned_stack)
         if anz != nz:
@@ -138,6 +186,7 @@ def check_tilt_series(name: str, xml_path: Path, tiltstack_path: Path) -> TiltSe
         n_tilts=nz,
         pixel_size=read_pixel_size(raw_stack),
         tilt_angles=angles,
+        deselected_tilts=deselected,
         warnings=warnings,
     )
 

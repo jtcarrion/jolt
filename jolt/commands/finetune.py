@@ -207,7 +207,10 @@ def main(args: argparse.Namespace) -> None:
         n_tilts = int(entry["n_tilts"])
         angles = read_tlt(entry["tlt"])
         tilts_dir = out / "tilts" / name
-        wanted = [i for i in sorted(labels[name]) if abs(angles[i]) <= args.max_abs_angle + 0.5]
+        deselected = {int(i) - 1 for i in entry.get("deselected_tilts", [])}  # tilt images deselected in Warp
+        wanted = [i for i in sorted(labels[name]) if abs(angles[i]) <= args.max_abs_angle + 0.5 and i not in deselected]
+        if deselected & set(labels[name]):
+            log(f"[{name}] skipping {len(deselected & set(labels[name]))} labeled tilt image(s) deselected in Warp")
         if not args.dry_run and not all(
             (tilts_dir / f"{topaz.tilt_image_name(i, n_tilts)}.mrc").exists() for i in wanted
         ):

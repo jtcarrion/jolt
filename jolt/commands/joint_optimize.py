@@ -177,6 +177,7 @@ def main(args: argparse.Namespace) -> None:
             output_frame=pipeline.output_frame_for(
                 args.output_frame, (x, y, z), entry["pixel_size"], entry["xf"], entry["tlt"], entry.get("xml")
             ),
+            deselected_tilts=tuple(entry.get("deselected_tilts", [])),
         )
         tasks.append(batch.Task(name, pipeline.run_tilt_series_logged, (inputs, str(out_root / name), settings)))
 

@@ -20,6 +20,7 @@ Layout::
         xf: ...
         tlt: ...
         n_tilts: 31
+        deselected_tilts: []                 # 1-based stack positions deselected in Warp (UseTilt); optional
         raw_dims_xy: [630, 630]
         pixel_size: 10.0
         picks_2d: ...                        # optional until detect_2d or import --picks_2d
@@ -70,6 +71,12 @@ def validate(config: dict, source: str = CONFIG_NAME) -> None:
         for key in ("raw_stack", "xf", "tlt", "n_tilts", "raw_dims_xy", "pixel_size"):
             if entry.get(key) is None:
                 problems.append(f"tilt_series.{name}.{key} is missing")
+        deselected = entry.get("deselected_tilts", [])
+        n_tilts = entry.get("n_tilts")
+        if not isinstance(deselected, list) or not all(
+            isinstance(i, int) and (not isinstance(n_tilts, int) or 1 <= i <= n_tilts) for i in deselected
+        ):
+            problems.append(f"tilt_series.{name}.deselected_tilts must list stack positions 1..n_tilts")
         frame = entry.get("picks_frame", "raw")
         if frame not in PICKS_FRAMES:
             problems.append(f"tilt_series.{name}.picks_frame is {frame!r}, expected one of {PICKS_FRAMES}")
