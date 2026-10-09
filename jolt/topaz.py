@@ -25,6 +25,8 @@ from jolt.io.imod import write_picks_mod
 PRETRAINED_MODELS = ("resnet8", "resnet16", "resnet8_u32", "resnet8_u64", "resnet16_u32", "resnet16_u64")
 DEFAULT_MODEL = "resnet16"
 DEFAULT_THRESHOLD = -6.0
+#: Picks kept per tilt image when neither ``--top_k`` nor ``--threshold`` is given.
+DEFAULT_TOP_K = 1200
 #: With ``--top_k`` every non-maximum-suppression peak is extracted and the best K are kept afterwards.
 TOP_K_THRESHOLD_FLOOR = -1.0e6
 #: Topaz preprocess fits on one pixel in this many (``--sample``); fitting on all pixels can collapse.
