@@ -1,9 +1,9 @@
 """Pick 2D particles on every raw tilt image with Topaz and add the picks to jolt.yaml.
 
 ``jolt detect_2d`` splits each raw tilt stack into tilt images, runs Topaz (preprocessing and extraction,
-seeded for reproducibility), writes one 2D pick STAR file per tilt series, and records the pick files in
-jolt.yaml for ``jolt joint_optimize``. Skip it if you registered your own picks with
-``jolt import --picks_2d``.
+seeded for reproducibility), writes one 2D pick STAR file per tilt series plus the same picks as an IMOD model
+(``<TS>_picks.mod``, view with ``3dmod <TS>.st <TS>_picks.mod``), and records the pick files in jolt.yaml for
+``jolt joint_optimize``. Skip it if you registered your own picks with ``jolt import --picks_2d``.
 """
 
 import argparse

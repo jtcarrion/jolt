@@ -19,6 +19,8 @@ from pathlib import Path
 import mrcfile
 import numpy as np
 
+from jolt.io.imod import write_picks_mod
+
 #: Pretrained Topaz models that can be named instead of a ``.sav`` file.
 PRETRAINED_MODELS = ("resnet8", "resnet16", "resnet8_u32", "resnet8_u64", "resnet16_u32", "resnet16_u64")
 DEFAULT_MODEL = "resnet16"
@@ -281,6 +283,18 @@ def detect_tilt_series(
         rows.extend((image, x, y, s, name) for x, y, s in tilt_picks)
     Path(out_star).parent.mkdir(parents=True, exist_ok=True)
     write_picks_star(out_star, rows)
+    # The same picks as an IMOD model on the raw stack (3dmod <stack> <model>); stack position = Topaz image order.
+    out_mod = Path(out_star).with_suffix(".mod")
+    section_of = {p.stem: i for i, p in enumerate(pp_images)}
+    by_section: dict[int, list] = {}
+    for image, x, y, _, _ in rows:
+        by_section.setdefault(section_of[image], []).append((float(x), float(y)))
+    if by_section:
+        with mrcfile.open(stack, header_only=True, permissive=True) as mrc:
+            dims_xy = (int(mrc.header.nx), int(mrc.header.ny))
+        write_picks_mod(
+            out_mod, {k: np.array(v) for k, v in by_section.items()}, dims_xy, n_tilts, sphere_radius=radius
+        )
     counts = [sum(1 for r in rows if r[0] == image) for image in sorted(expected)]
     stats = {
         "n_tilts": n_tilts,
@@ -292,7 +306,11 @@ def detect_tilt_series(
         "tilts_dir": str(tilts_dir) if tilts_dir else None,
         "seeded": topaz.python is not None,
     }
-    log(f"[{name}] {len(rows)} picks ({stats['avg_picks_per_tilt']} per tilt image) -> {out_star}")
+    stats["picks_mod"] = str(out_mod) if by_section else None
+    log(
+        f"[{name}] {len(rows)} picks ({stats['avg_picks_per_tilt']} per tilt image) -> {out_star}"
+        + (" (+ .mod)" if by_section else "")
+    )
     if not keep_work:
         shutil.rmtree(work_dir, ignore_errors=True)
     return stats
