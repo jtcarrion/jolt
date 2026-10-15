@@ -76,6 +76,166 @@ class MlesacSettings:
 
 
 @dataclass
+class NoiseModelEstimate:
+    """Per-series pick noise model estimated from the MLESAC hypotheses (no ground truth).
+
+    ``sigma_px`` is the pick localization scale and ``gamma`` the per-tilt detection probability of the
+    mixture fitted by :func:`estimate_noise_model`; ``sigma_raw_px`` / ``gamma_raw`` are the unbounded fit.
+    """
+
+    sigma_px: float
+    gamma: float
+    sigma_raw_px: float
+    gamma_raw: float
+    rho_per_px2: float  # mean pick density of the tilts used
+    n_points: int
+    n_distances: int
+    iterations: int
+    converged: bool
+    fallback: bool
+    reason: str  # why the fallback value was used ("" when it was not)
+
+
+def fit_rayleigh_poisson_mixture(
+    d: np.ndarray, rho: np.ndarray, *, sigma0: float = 3.0, gamma0: float = 0.5, n_iter: int = 200, rtol: float = 1e-8
+) -> tuple[float, float, int, bool]:
+    """EM fit of nearest-pick distances to ``gamma Rayleigh(sigma) + (1 - gamma) NearestNeighbour(rho)``.
+
+    A correct pick sits at the true projection plus isotropic Gaussian jitter of scale ``sigma``, so its distance
+    follows the Rayleigh law ``f_in(d) = d / sigma^2 exp(-d^2 / (2 sigma^2))``. When the particle was not picked,
+    the nearest pick is the nearest point of a Poisson field of density ``rho`` (picks per px^2), whose distance
+    follows ``f_out(d) = 2 pi rho d exp(-rho pi d^2)``. ``rho`` is given per distance (its tilt's pick density);
+    ``sigma`` and ``gamma`` are fitted with closed-form EM steps.
+
+    Returns ``sigma, gamma, iterations, converged``; ``sigma`` is NaN if the fit is degenerate.
+    """
+    d = np.asarray(d, dtype=float)
+    rho = np.asarray(rho, dtype=float)
+    sigma2, gamma = float(sigma0) ** 2, float(gamma0)
+    loglik = -np.inf
+    converged = False
+    iterations = 0
+    f_out = 2.0 * np.pi * rho * d * np.exp(-rho * np.pi * d * d)
+    for iterations in range(1, int(n_iter) + 1):
+        f_in = d / sigma2 * np.exp(-(d * d) / (2.0 * sigma2))
+        num = gamma * f_in
+        den = num + (1.0 - gamma) * f_out + 1e-300
+        r = num / den
+        r_sum = float(r.sum())
+        if not np.isfinite(r_sum) or r_sum <= 0.0:
+            return float("nan"), float("nan"), iterations, False
+        gamma = r_sum / float(d.size)
+        sigma2 = float((r * d * d).sum()) / (2.0 * r_sum)
+        new_loglik = float(np.log(den).sum())
+        if np.isfinite(loglik) and abs(new_loglik - loglik) <= rtol * max(1.0, abs(loglik)):
+            converged = True
+            loglik = new_loglik
+            break
+        loglik = new_loglik
+    return float(np.sqrt(sigma2)), float(gamma), iterations, converged
+
+
+def estimate_noise_model(
+    points_center: np.ndarray,
+    coords_by_tilt: dict[float, np.ndarray],
+    image_dims_hw: tuple[int, int],
+    *,
+    sigma_fallback: float,
+    gamma_fallback: float,
+    sigma_bounds: tuple[float, float] = (1.5, 6.0),
+    gamma_bounds: tuple[float, float] = (0.2, 0.95),
+    min_points: int = 20,
+    min_distances: int = 500,
+) -> NoiseModelEstimate:
+    """Estimate the pick noise scale and detection rate of one tilt series from its 3D hypotheses.
+
+    For every hypothesis and every tilt in which it projects inside the image (zero shifts), the distance to
+    the nearest pick is taken with no radius cut (a cut would bias the fit, as the original code found) and the
+    mixture of :func:`fit_rayleigh_poisson_mixture` is fitted. The hypotheses are MLESAC's best-fitting points,
+    not the true particles, so ``sigma`` comes out about 10% below the value measured against ground truth
+    (CZI DS-10441: 2.3 vs 2.5 px) and ``gamma`` comes out high (0.8-0.9 vs 0.7); the bundle adjustment results
+    are insensitive to the former, which is why only ``sigma`` is used by default.
+
+    Parameters
+    ----------
+    points_center : numpy.ndarray
+        ``(N, 3)`` hypotheses in the centered 3D frame.
+    coords_by_tilt : dict of float to numpy.ndarray
+        Tilt angle to ``(n, >= 2)`` aligned-frame picks ``x, y, ...`` (corner frame).
+    image_dims_hw : tuple of int
+    sigma_fallback, gamma_fallback : float
+        Values returned (with ``fallback=True`` and a reason) when there are fewer than ``min_points``
+        hypotheses or ``min_distances`` distances, the fit is degenerate, or ``sigma`` leaves ``sigma_bounds``.
+        ``gamma`` outside ``gamma_bounds`` is clipped, not replaced.
+    """
+    pts = np.asarray(points_center, dtype=float)
+    h, w = int(image_dims_hw[0]), int(image_dims_hw[1])
+    u_half, v_half = (w - 1) / 2.0, (h - 1) / 2.0
+    area = float(h * w)
+
+    def fallback(reason: str, n_dist: int = 0, rho_mean: float = float("nan"), raw=(float("nan"), float("nan")), it=0):
+        return NoiseModelEstimate(
+            float(sigma_fallback),
+            float(gamma_fallback),
+            raw[0],
+            raw[1],
+            rho_mean,
+            int(pts.shape[0]),
+            n_dist,
+            it,
+            False,
+            True,
+            reason,
+        )
+
+    if pts.shape[0] < int(min_points):
+        return fallback(f"{pts.shape[0]} hypotheses < {min_points}")
+    d_all, rho_all = [], []
+    for tilt, picks in coords_by_tilt.items():
+        if len(picks) == 0:
+            continue
+        uv = corner_to_center_2d_bottom_left(np.asarray(picks)[:, :2].astype(float), image_dims_hw)
+        proj = project_y_axis(pts, float(tilt))
+        inside = (np.abs(proj[:, 0]) <= u_half) & (np.abs(proj[:, 1]) <= v_half)
+        if not np.any(inside):
+            continue
+        d, _ = cKDTree(uv).query(proj[inside], k=1)
+        d_all.append(d)
+        rho_all.append(np.full(d.shape[0], len(picks) / area))
+    n_dist = int(sum(len(x) for x in d_all))
+    if n_dist < int(min_distances):
+        return fallback(f"{n_dist} distances < {min_distances}", n_dist)
+    d = np.concatenate(d_all)
+    rho = np.concatenate(rho_all)
+    rho_mean = float(rho.mean())
+    sigma, gamma, iterations, converged = fit_rayleigh_poisson_mixture(d, rho)
+    if not (np.isfinite(sigma) and np.isfinite(gamma)):
+        return fallback("degenerate fit", n_dist, rho_mean, (sigma, gamma), iterations)
+    if not (sigma_bounds[0] <= sigma <= sigma_bounds[1]):
+        return fallback(
+            f"sigma {sigma:.2f} px outside [{sigma_bounds[0]}, {sigma_bounds[1]}]",
+            n_dist,
+            rho_mean,
+            (sigma, gamma),
+            iterations,
+        )
+    gamma_used = float(np.clip(gamma, gamma_bounds[0], gamma_bounds[1]))
+    return NoiseModelEstimate(
+        float(sigma),
+        gamma_used,
+        float(sigma),
+        float(gamma),
+        rho_mean,
+        int(pts.shape[0]),
+        n_dist,
+        iterations,
+        converged,
+        False,
+        "",
+    )
+
+
+@dataclass
 class ObservationTable:
     """2D picks of one tilt series in the internal centered frame, indexed by tilt."""
 

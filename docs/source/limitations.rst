@@ -10,9 +10,14 @@ Limitations
   by less than 0.04 px and leaves the selected particles identical on the CZI benchmark. With
   ``--ba_loss nearest`` (the previous behaviour) the line search and convergence test keep the shifts within
   about 0.3 px, but individual particles can still move by several pixels.
-* The ``evidence`` loss needs the pick localization scale ``--ba_sigma`` (default 2.5 px, measured on CZI
-  DS-10441 at 10 A/px). Other pickers, NMS radii or pixel sizes have other values (3.1-3.5 px on EMPIAR-13391):
-  too small a value loses matches at tight scoring radii, too large a value blurs neighbouring particles.
+* The ``evidence`` loss needs the pick localization scale ``--ba_sigma``. By default it is estimated per tilt
+  series from the MLESAC hypotheses (2.2-2.4 px on CZI DS-10441, 2.9 px on EMPIAR-10499, 3.1-3.3 px on
+  EMPIAR-13391, all at 10 A/px), bounded to 1.5-6 px with a fallback to 2.5 px that is logged as a WARNING and
+  recorded in ``run_status.json`` (``ba.noise_model``). The estimate runs about 10% below the value measured
+  against ground truth because the hypotheses are the best-fitting points; the results are insensitive to
+  that. A value that is too small loses matches at tight scoring radii, too large a value blurs neighbouring
+  particles. The detection probability ``--ba_gamma`` stays at 0.7 by default: its per-series estimate is
+  biased high for the same reason.
 * The pre-BA "gap filling" step of the original pipeline is not part of JOLT: with MLESAC initialization and
   greedy bundle adjustment (which re-matches every particle to the picks itself) it had no effect on the
   output.

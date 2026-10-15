@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from os import PathLike
 from pathlib import Path
 
@@ -56,6 +56,10 @@ class JointOptimizeSettings:
     divergence_rms_px: float = 8.165
     iterations: int = 1  # passes of picks -> MLESAC -> BA, each starting from the previous refined alignment
     volume_margin_xyz: tuple[float, float, float] = (10.0, 10.0, 5.0)
+    #: Pick noise scale for the evidence loss; None = estimate it per tilt series (:func:`mlesac.estimate_noise_model`).
+    noise_sigma_px: float | None = None
+    #: Detection probability for the evidence loss; None = the per-series estimate (biased high; not the default).
+    noise_gamma: float | None = 0.7
 
 
 @dataclass
@@ -422,6 +426,37 @@ def run_tilt_series(
             )
             if tracks.n_beads == 0:
                 tracks = None
+        # Noise model of the evidence loss: per-series estimate from the hypotheses unless given explicitly.
+        bundle_settings = s.bundle
+        noise_record: dict | None = None
+        if s.bundle.loss == "evidence" and len(x_init):
+            estimate = mlesac.estimate_noise_model(
+                geometry.corner_to_center_3d(x_init, tomo_zyx),
+                coords,
+                image_hw,
+                sigma_fallback=s.bundle.sigma_px,
+                gamma_fallback=s.bundle.gamma,
+            )
+            sigma_px = estimate.sigma_px if s.noise_sigma_px is None else float(s.noise_sigma_px)
+            gamma = estimate.gamma if s.noise_gamma is None else float(s.noise_gamma)
+            bundle_settings = replace(s.bundle, sigma_px=sigma_px, gamma=gamma)
+            noise_record = {
+                **asdict(estimate),
+                "sigma_source": "auto" if s.noise_sigma_px is None else "fixed",
+                "gamma_source": "auto" if s.noise_gamma is None else "fixed",
+            }
+            if s.noise_sigma_px is None and estimate.fallback:
+                log(
+                    f"[{inputs.name}] WARNING: pick noise scale not estimated ({estimate.reason}); "
+                    f"using sigma {sigma_px:.2f} px"
+                )
+            else:
+                log(
+                    f"[{inputs.name}] evidence loss: sigma {sigma_px:.2f} px "
+                    f"({noise_record['sigma_source']}; estimate {estimate.sigma_raw_px:.2f} px from "
+                    f"{estimate.n_distances} nearest-pick distances), gamma {gamma:.2f} "
+                    f"({noise_record['gamma_source']}; estimate {estimate.gamma_raw:.2f})"
+                )
         ba_status: dict = {"status": "not_run", "error": None}
         x_ba = shifts = None
         if len(x_init) == 0:
@@ -435,7 +470,7 @@ def run_tilt_series(
                     shifts0,
                     image_hw,
                     tomo_zyx,
-                    s.bundle,
+                    bundle_settings,
                     device=device,
                     log=log,
                     fiducials=tracks,
@@ -489,6 +524,7 @@ def run_tilt_series(
                     "The particles are the MLESAC points and no refined .xf is written."
                 )
         ba_status["output_points_source"] = "bundle_adjustment" if x_ba is not None else "mlesac"
+        ba_status["noise_model"] = noise_record
         status["ba"] = ba_status
 
         if x_ba is not None:
@@ -515,6 +551,7 @@ def run_tilt_series(
                 "n_points_inside_volume": int(len(x_init)),
                 "ba_status": ba_status["status"],
                 "shift_change_rms_px": pass_change,
+                "sigma_px": bundle_settings.sigma_px if bundle_settings.loss == "evidence" else None,
             }
         )
         if n_iter > 1:
@@ -696,9 +733,12 @@ def run_tilt_series_logged(inputs: TiltSeriesInputs, output_dir: str, settings: 
     if log_path.exists():
         log_path.unlink()
     status = run_tilt_series(inputs, out, settings, log=FileLog(log_path, echo=False))
+    noise_model = status["ba"].get("noise_model") or {}
     return {
         "ba_status": status["ba"]["status"],
         "ba_error": status["ba"].get("error"),
+        "sigma_px": status["ba"].get("sigma_px"),
+        "noise_model_fallback": bool(noise_model.get("fallback", False)),
         "fom_status": status.get("fom", {}).get("status"),
         "n_particles": status["n_particles"],
         "output_frame": status["output_frame"]["name"],
