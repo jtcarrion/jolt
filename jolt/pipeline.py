@@ -447,6 +447,9 @@ def run_tilt_series(
                 ba_status.update(
                     {
                         "error": None,
+                        "loss": ba.get("loss", s.bundle.loss),
+                        "sigma_px": ba.get("sigma_px"),
+                        "gamma": ba.get("gamma"),
                         "final_rmse_px": float(ba["rmse"]),
                         "point_reg_loss": float(ba["point_reg_loss"]),
                         "steps": int(ba["steps"]),

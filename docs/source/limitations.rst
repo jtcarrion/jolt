@@ -5,9 +5,14 @@ Limitations
 * Tilt series must be aligned already (an IMOD ``.xf`` per tilt series). JOLT refines per-tilt shifts, not
   the tilt axis or the tilt angles.
 * Results can differ very slightly between GPU types and library versions (PyTorch, NumPy, SciPy), since bundle
-  adjustment is an iterative optimization. Bundle adjustment uses a line search and a convergence test, so
-  such tiny differences no longer change the solution: perturbing the starting points by 0.001 px moves refined
-  shifts by at most about 0.3 px on the CZI benchmark.
+  adjustment is an iterative optimization. The default ``evidence`` loss is smooth (no match switching), so such
+  tiny differences do not change the solution: perturbing the starting points by 0.001 px moves refined shifts
+  by less than 0.04 px and leaves the selected particles identical on the CZI benchmark. With
+  ``--ba_loss nearest`` (the previous behaviour) the line search and convergence test keep the shifts within
+  about 0.3 px, but individual particles can still move by several pixels.
+* The ``evidence`` loss needs the pick localization scale ``--ba_sigma`` (default 2.5 px, measured on CZI
+  DS-10441 at 10 A/px). Other pickers, NMS radii or pixel sizes have other values (3.1-3.5 px on EMPIAR-13391):
+  too small a value loses matches at tight scoring radii, too large a value blurs neighbouring particles.
 * The pre-BA "gap filling" step of the original pipeline is not part of JOLT: with MLESAC initialization and
   greedy bundle adjustment (which re-matches every particle to the picks itself) it had no effect on the
   output.

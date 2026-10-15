@@ -56,7 +56,23 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         "--match_distance",
         type=float,
         default=12.0,
-        help="bundle adjustment matches each projected particle to its nearest pick within this distance (pixels)",
+        help="bundle adjustment considers the picks within this distance of each projected particle (pixels): the "
+        "neighbourhood of the evidence loss, or the nearest-pick gate of the nearest loss",
+    )
+    optimization.add_argument(
+        "--ba_loss",
+        choices=["evidence", "nearest"],
+        default="evidence",
+        help="bundle-adjustment loss: evidence = MLESAC's mixture evidence summed over the picks within "
+        "--match_distance (smooth, no match switching; the default); nearest = Huber loss on the nearest pick "
+        "(the behaviour before the evidence loss)",
+    )
+    optimization.add_argument(
+        "--ba_sigma",
+        type=float,
+        default=2.5,
+        help="evidence loss: expected distance between a correct pick and the true projected particle centre "
+        "(pixels); 2.0-2.9 px measured on CZI DS-10441, 3.1-3.5 px on EMPIAR-13391",
     )
     optimization.add_argument(
         "--fom_search_radius",
@@ -197,6 +213,8 @@ def main(args: argparse.Namespace) -> None:
     settings = pipeline.JointOptimizeSettings(
         mlesac=MlesacSettings(search_radius_px=args.mlesac_search_radius),
         bundle=BundleAdjustmentSettings(
+            loss=args.ba_loss,
+            sigma_px=args.ba_sigma,
             shift_reg=args.shift_reg,
             point_reg=args.point_reg,
             max_match_distance=args.match_distance,
