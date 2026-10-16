@@ -56,15 +56,15 @@ def test_soft_inside_values():
     assert float(far_outside) < 1e-6
 
 
-def test_pick_neighbourhoods_lists_every_pick_within_radius():
+def test_pick_neighborhoods_lists_every_pick_within_radius():
     projected = np.zeros((2, 2, 2))
     projected[1, :, :] = 50.0
     picks = [np.array([[1.0, 0.0], [49.0, 50.0], [30.0, 30.0]]), None]
-    n, t, k = ba.pick_neighbourhoods(projected, picks, radius=5.0)
+    n, t, k = ba.pick_neighborhoods(projected, picks, radius=5.0)
     assert set(zip(n.tolist(), t.tolist(), k.tolist(), strict=True)) == {(0, 0, 0), (1, 0, 1)}
 
 
-def test_evidence_terms_no_neighbour_is_the_miss_penalty():
+def test_evidence_terms_no_neighbor_is_the_miss_penalty():
     projected = torch.zeros((3, 2, 2))
     empty = torch.empty(0, dtype=torch.long)
     evidence, share = ba.evidence_terms(
@@ -93,7 +93,7 @@ def test_evidence_gradient_matches_finite_differences():
         projected0 = (
             torch.einsum("mij,nj->nmi", proj_m, torch.cat([x, torch.ones(n, 1, dtype=torch.float64)], 1))[:, :, :2] + d
         ).numpy()
-    n_idx, t_idx, k_idx = ba.pick_neighbourhoods(projected0, picks_np, radius=12.0)
+    n_idx, t_idx, k_idx = ba.pick_neighborhoods(projected0, picks_np, radius=12.0)
     n_idx, t_idx = torch.as_tensor(n_idx), torch.as_tensor(t_idx)
     k_flat = torch.as_tensor(offsets[t_idx.numpy()] + k_idx)
 

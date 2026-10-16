@@ -63,7 +63,7 @@ CZI_LIKE_SPECIES = (
 class SyntheticSeries:
     """Output of :func:`synthetic_series`; particles and picks in JOLT's frames."""
 
-    xyz_corner: np.ndarray  # (N, 3) particle centres in the internal corner 3D frame (y up)
+    xyz_corner: np.ndarray  # (N, 3) particle centers in the internal corner 3D frame (y up)
     species: np.ndarray  # (N,) species names
     picks: dict  # tilt -> (K, 3) picks x, y, score in the STAR corner frame (y down), as JOLT reads them
     shifts: np.ndarray  # (M, 2) injected per-tilt shifts (dx, dy) in the internal frame (y up), zero if none

@@ -16,11 +16,11 @@ shifts and the points near their starting values.
     one for LBFGS's tolerances). The gradient is the responsibility-weighted residual: identical to the
     nearest-match gradient when one pick dominates, an average over ambiguous picks otherwise. The loss is
     smooth, so no match switching: with the same starting points perturbed by 0.001 px the refined shifts
-    change by less than 0.04 px and the selected particles are identical (CZI). The neighbourhoods (picks
+    change by less than 0.04 px and the selected particles are identical (CZI). The neighborhoods (picks
     within the radius of each projection) are refreshed at every outer LBFGS step and are a fixed sparsity
     pattern inside a step.
 
-``nearest`` (the previous behaviour)
+``nearest`` (the previous behavior)
     At every evaluation each projected point is matched to its nearest 2D pick in that tilt, within
     ``max_match_distance``, with a Huber (smooth L1) loss on the residual length. The loss changes in steps
     whenever a match switches, so LBFGS uses a strong-Wolfe line search (every accepted step must decrease the
@@ -396,7 +396,7 @@ def soft_inside(projected: torch.Tensor, image_dims_hw: tuple[int, int], width_p
     )
 
 
-def pick_neighbourhoods(
+def pick_neighborhoods(
     projected: np.ndarray, picks_by_tilt: list[np.ndarray | None], radius: float
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Index every pick within ``radius`` of every projection.
@@ -449,7 +449,7 @@ def evidence_terms(
     picks_flat : torch.Tensor
         ``(sum_t K_t, 2)`` picks of all tilts concatenated in tilt order.
     point_index, tilt_index, pick_flat_index : torch.Tensor
-        One (point, tilt, pick) triple per neighbour, the pick index into ``picks_flat``.
+        One (point, tilt, pick) triple per neighbor, the pick index into ``picks_flat``.
 
     Returns
     -------
@@ -489,7 +489,7 @@ def evidence_bundle_adjustment(
     sum over tilts of the inlier share of its evidence: the expected number of tilts in which it is detected)
     and ``log_evidence`` (per point, the sum over tilts of ``I_t log e[t, n]``). ``rmse`` and
     ``match_statistics`` are computed from the nearest pick within the radius, as for the ``nearest`` loss, so
-    the two are comparable. Each outer step refreshes the neighbourhoods from the current projections and runs
+    the two are comparable. Each outer step refreshes the neighborhoods from the current projections and runs
     a fresh LBFGS (its curvature history would not survive the refresh).
     """
     s = settings or BundleAdjustmentSettings()
@@ -545,10 +545,10 @@ def evidence_bundle_adjustment(
     scale = m_norm if s.scale_by_m else 1.0
     stats: dict = {}
 
-    def make_closure(neighbourhoods):
-        point_index = torch.as_tensor(neighbourhoods[0], device=device)
-        tilt_index = torch.as_tensor(neighbourhoods[1], device=device)
-        pick_flat_index = torch.as_tensor(offsets[neighbourhoods[1]] + neighbourhoods[2], device=device)
+    def make_closure(neighborhoods):
+        point_index = torch.as_tensor(neighborhoods[0], device=device)
+        tilt_index = torch.as_tensor(neighborhoods[1], device=device)
+        pick_flat_index = torch.as_tensor(offsets[neighborhoods[1]] + neighborhoods[2], device=device)
 
         def closure():
             optimizer.zero_grad()
@@ -582,7 +582,7 @@ def evidence_bundle_adjustment(
                 stats["data_loss"] = float(data_loss)
                 stats["soft_support"] = (inside * inlier_share).sum(dim=1)
                 stats["log_evidence"] = log_evidence.sum(dim=1)
-                stats["n_neighbours"] = int(point_index.numel())
+                stats["n_neighbors"] = int(point_index.numel())
             total.backward()
             return total
 
@@ -598,7 +598,7 @@ def evidence_bundle_adjustment(
     converged = False
     for step in range(s.max_steps):
         with torch.no_grad():
-            neighbourhoods = pick_neighbourhoods(project().cpu().numpy(), picks_np, s.max_match_distance)
+            neighborhoods = pick_neighborhoods(project().cpu().numpy(), picks_np, s.max_match_distance)
         optimizer = torch.optim.LBFGS(
             params,
             lr=s.lr,
@@ -608,11 +608,11 @@ def evidence_bundle_adjustment(
             tolerance_grad=s.tolerance_grad,
             tolerance_change=s.tolerance_change,
         )
-        loss = optimizer.step(make_closure(neighbourhoods))
+        loss = optimizer.step(make_closure(neighborhoods))
         loss_val = float(loss.detach()) if isinstance(loss, torch.Tensor) else float(loss)
         loss_history.append(loss_val)
         log(
-            f"  step {step:3d}: loss={loss_val / scale:.6f} neighbours={stats.get('n_neighbours', 0)} "
+            f"  step {step:3d}: loss={loss_val / scale:.6f} neighbors={stats.get('n_neighbors', 0)} "
             f"data={stats.get('data_loss', float('nan')):.6f}"
         )
         if previous is not None and abs(previous - loss_val) <= s.convergence_rtol * max(1.0, abs(previous)):

@@ -57,7 +57,7 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         type=float,
         default=12.0,
         help="bundle adjustment considers the picks within this distance of each projected particle (pixels): the "
-        "neighbourhood of the evidence loss, or the nearest-pick gate of the nearest loss",
+        "neighborhood of the evidence loss, or the nearest-pick gate of the nearest loss",
     )
     optimization.add_argument(
         "--ba_loss",
@@ -65,15 +65,15 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         default="evidence",
         help="bundle-adjustment loss: evidence = MLESAC's mixture evidence summed over the picks within "
         "--match_distance (smooth, no match switching; the default); nearest = Huber loss on the nearest pick "
-        "(the behaviour before the evidence loss)",
+        "(the behavior before the evidence loss)",
     )
     optimization.add_argument(
         "--ba_sigma",
         type=_auto_or_float,
         default="auto",
-        help="evidence loss: expected distance between a correct pick and the true projected particle centre "
+        help="evidence loss: expected distance between a correct pick and the true projected particle center "
         "(pixels), or 'auto' (default) to estimate it per tilt series from the MLESAC hypotheses (Rayleigh "
-        "inlier + nearest-neighbour outlier mixture of the nearest-pick distances, bounded to 1.5-6 px, "
+        "inlier + nearest-neighbor outlier mixture of the nearest-pick distances, bounded to 1.5-6 px, "
         "falling back to 2.5 px); 2.0-2.9 px measured on CZI DS-10441, 3.1-3.5 px on EMPIAR-13391",
     )
     optimization.add_argument(

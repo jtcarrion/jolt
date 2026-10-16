@@ -99,7 +99,7 @@ class NoiseModelEstimate:
 def fit_rayleigh_poisson_mixture(
     d: np.ndarray, rho: np.ndarray, *, sigma0: float = 3.0, gamma0: float = 0.5, n_iter: int = 200, rtol: float = 1e-8
 ) -> tuple[float, float, int, bool]:
-    """EM fit of nearest-pick distances to ``gamma Rayleigh(sigma) + (1 - gamma) NearestNeighbour(rho)``.
+    """EM fit of nearest-pick distances to ``gamma Rayleigh(sigma) + (1 - gamma) NearestNeighbor(rho)``.
 
     A correct pick sits at the true projection plus isotropic Gaussian jitter of scale ``sigma``, so its distance
     follows the Rayleigh law ``f_in(d) = d / sigma^2 exp(-d^2 / (2 sigma^2))``. When the particle was not picked,
