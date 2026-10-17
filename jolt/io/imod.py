@@ -140,6 +140,66 @@ def write_points_mod(
     model.to_file(path)
 
 
+def write_picks_mod(
+    path: str | PathLike,
+    picks_by_section: dict[int, np.ndarray],
+    image_dims_xy: tuple[int, int],
+    n_sections: int,
+    sphere_radius: float = 2.0,
+) -> None:
+    """Write 2D picks on a tilt stack as an IMOD model (``.mod``), for ``3dmod <stack> <model>``.
+
+    The convention is etomo's for models on a stack (e.g. its ``.fid`` bead model): ``x, y`` at pixel index + 0.5
+    (IMOD places pixel centers there) and ``z`` the 0-based section (tilt image) index, an integer, so every pick
+    shows on its own tilt image. One scattered-point object with one contour per tilt image, so 3dmod lists the
+    picks per tilt. Points are drawn as circles of ``sphere_radius`` pixels on their own section only (3dmod would
+    otherwise draw each sphere on the neighboring sections too, i.e. on other tilt images). The image size and
+    number of sections are stamped in the header.
+
+    Parameters
+    ----------
+    path : str or path-like
+        Output ``.mod`` file.
+    picks_by_section : dict
+        ``{0-based section index: (n, 2) array of x, y}`` in the image's 0-based pixel coordinates (as the picks STAR).
+    image_dims_xy : tuple of int
+        Tilt-image width and height in pixels.
+    n_sections : int
+        Number of images in the stack.
+    sphere_radius : float
+        Radius of the circle drawn at each pick, in pixels (``detect_2d`` uses its extraction radius).
+    """
+    import pandas as pd
+    from imodmodel import ImodModel
+
+    parts = []
+    for section in sorted(picks_by_section):
+        xy = np.asarray(picks_by_section[section], dtype=float).reshape(-1, 2)
+        if not 0 <= int(section) < int(n_sections):
+            raise ValueError(f"section {section} outside 0..{int(n_sections) - 1}")
+        if len(xy):
+            parts.append(
+                pd.DataFrame(
+                    {
+                        "object_id": 0,
+                        "contour_id": int(section),
+                        "x": xy[:, 0] + 0.5,
+                        "y": xy[:, 1] + 0.5,
+                        "z": float(section),
+                    }
+                )
+            )
+    if not parts:
+        raise ValueError("no picks to write")
+    model = ImodModel.from_dataframe(pd.concat(parts, ignore_index=True))
+    obj = model.objects[0].header
+    obj.flags.draw_spheres_central_section_only = True  # a pick belongs to one tilt image, not its neighbors
+    obj.pdrawsize = max(1, int(round(float(sphere_radius))))
+    model.header.xmax, model.header.ymax = (int(v) for v in image_dims_xy)
+    model.header.zmax = int(n_sections)
+    model.to_file(path)
+
+
 def read_fiducial_beads(
     fid_path: str | PathLike, prexg_path: str | PathLike, n_tilts: int, raw_dims_xy: tuple[int, int]
 ):

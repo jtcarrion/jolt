@@ -12,8 +12,9 @@
   ```
 
 * Before opening a pull request, run `pre-commit run --all-files` and `pytest`.
-* Changes that can alter numerical output must be checked against the CZI reference
-  (see `benchmarks/README.md`), on an A100, and the result reported in the pull request.
+* Changes that can alter numerical output are checked by the maintainers against the CZI DS-10441
+  benchmark before merging; say in the pull request which outputs you expect to change
+  (`benchmarks/README.md` describes the single-tilt-series check you can run yourself).
 
 ## Style
 

@@ -1,9 +1,9 @@
 """Pick 2D particles on every raw tilt image with Topaz and add the picks to jolt.yaml.
 
 ``jolt detect_2d`` splits each raw tilt stack into tilt images, runs Topaz (preprocessing and extraction,
-seeded for reproducibility), writes one 2D pick STAR file per tilt series, and records the pick files in
-jolt.yaml for ``jolt joint_optimize``. Skip it if you registered your own picks with
-``jolt import --picks_2d``.
+seeded for reproducibility), writes one 2D pick STAR file per tilt series plus the same picks as an IMOD model
+(``<TS>_picks.mod``, view with ``3dmod <TS>.st <TS>_picks.mod``), and records the pick files in jolt.yaml for
+``jolt joint_optimize``. Skip it if you registered your own picks with ``jolt import --picks_2d``.
 """
 
 import argparse
@@ -31,14 +31,19 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         "--threshold",
         type=float,
         default=None,
-        help="keep picks with a Topaz score above this (default: -6 when --top_k is not given)",
+        help="keep every pick with a Topaz score above this (e.g. -6), instead of the best K per tilt image",
     )
-    selection.add_argument("--top_k", type=int, default=None, help="keep the best K picks on each tilt image")
+    selection.add_argument(
+        "--top_k",
+        type=int,
+        default=None,
+        help="keep the best K picks on each tilt image (default: 1200 unless --threshold is given)",
+    )
     picking.add_argument(
         "--weights",
         default=None,
-        help="Topaz model: a pretrained name (e.g. resnet16) or a .sav file "
-        "(default: the jolt finetune weights recorded in jolt.yaml if present, else resnet16)",
+        help="Topaz model: a pretrained name (e.g. resnet16) or a .sav file (default: resnet16, or the model "
+        "trained by jolt finetune in this project if there is one)",
     )
     picking.add_argument("--seed", type=int, default=0, help="seed for Topaz preprocessing (same seed, same picks)")
 
@@ -80,6 +85,19 @@ def _devices(spec: str | None) -> list[int]:
         return [-1]
 
 
+def pick_selection(threshold: float | None, top_k: int | None) -> tuple[float | None, int | None]:
+    """Resolve ``(threshold, top_k)``: exactly one is set. Neither given -> the best 1200 picks per tilt image."""
+    from jolt import topaz
+
+    if threshold is not None and top_k is not None:
+        raise SystemExit("give --threshold or --top_k, not both")
+    if top_k is not None and top_k <= 0:
+        raise SystemExit("--top_k must be positive")
+    if threshold is not None:
+        return float(threshold), None
+    return None, int(top_k) if top_k is not None else topaz.DEFAULT_TOP_K
+
+
 def main(args: argparse.Namespace) -> None:
     """Run ``jolt detect_2d``."""
     import json
@@ -94,9 +112,8 @@ def main(args: argparse.Namespace) -> None:
 
     if args.radius <= 0:
         raise SystemExit("--radius must be a positive number of pixels")
-    if args.top_k is not None and args.top_k <= 0:
-        raise SystemExit("--top_k must be positive")
-    threshold = args.threshold if (args.threshold is not None or args.top_k is not None) else topaz.DEFAULT_THRESHOLD
+    threshold, args.top_k = pick_selection(args.threshold, args.top_k)
+    args.threshold = threshold
 
     project_dir = Path(args.project_dir)
     cfg = config.load(project_dir)
