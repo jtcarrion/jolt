@@ -1,6 +1,42 @@
 Conventions
 ===========
 
+Outputs
+-------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - File
+     - Content
+   * - ``detect_2d/<TS>/<TS>_picks.star``
+     - 2D picks on the raw tilt images (pixel x, y, Topaz score, tilt image by stack position)
+   * - ``detect_2d/<TS>/<TS>_picks.mod``
+     - the same picks as an IMOD model for the raw stack: ``3dmod <TS>.st <TS>_picks.mod`` (one contour per tilt
+       image, each pick drawn only on its own tilt, circle radius = ``--radius``)
+   * - ``joint_optimize/<TS>/<TS>_particles.star``
+     - 3D particles with ``rlnAutopickFigureOfMerit``, ``rlnJoltDetectorScore``, ``rlnJoltResidual`` and
+       ``rlnJoltMatchedTilts`` (see `Figure of merit`_)
+   * - ``joint_optimize/<TS>/<TS>_particles.mod``
+     - the same particles as an IMOD model for the tomogram
+   * - ``joint_optimize/<TS>/<TS>.xf``, ``<TS>.tlt``
+     - the refined alignment and its tilt angles, ready for Warp (see `Refined alignment`_ and :doc:`warp`)
+   * - ``joint_optimize/<TS>/run_status.json``
+     - what happened: picks, MLESAC counts, bundle adjustment status and noise model, output frame, deselected
+       tilts, per-pass results with ``--iter``
+   * - ``joint_optimize/summary.json``
+     - one line per tilt series; ``joint_optimize`` lists every tilt series that needs attention at the end
+
+2D picks
+--------
+
+``jolt detect_2d`` keeps the best 1200 picks on each tilt image by default (``--top_k``). ``--threshold T`` keeps
+every pick with a Topaz score above ``T`` instead (``-6`` keeps nearly everything with the pretrained model).
+``--radius`` is Topaz's extraction radius: two picks are never closer than this, so set it to about the radius
+of the smallest particle you want. JOLT discards inconsistent picks in 3D, but cannot recover a particle that was
+not picked on enough tilts, so keep the 2D selection generous.
+
 Units and frames
 ----------------
 
@@ -21,7 +57,11 @@ Tilt order
 
 An IMOD ``.xf`` is positional: row *i* applies to image *i* of the stack. JOLT never sorts or renumbers
 tilts; angles come from the ``.tlt`` that belongs to the stack, and a ``.tlt`` whose length disagrees with
-the ``.xf`` (or the stack, or the Warp ``UseTilt`` count) stops ``jolt import``.
+the ``.xf`` or the stack stops ``jolt import``.
+
+Tilt images deselected in Warp (``UseTilt`` false in the XML) are ignored: their picks take no part in the
+reconstruction, and ``run_status.json`` lists them. A stack written with only the used tilts (the XML then lists
+more tilts than the stack) is used as is.
 
 Refined alignment
 -----------------
@@ -32,6 +72,20 @@ its translation changed by the shift that bundle adjustment found, in the correc
 keep the input order. Tilt images deselected in Warp (``UseTilt``) are left out of both files, because Warp maps
 the rows onto its in-use tilts (``run_status.json`` lists the stack positions written). If bundle adjustment fails,
 neither file is written (``run_status.json`` says so).
+
+Bundle adjustment
+-----------------
+
+``joint_optimize`` initializes particles with MLESAC and then refines the particles and the per-tilt shifts
+together. The default loss (``--ba_loss evidence``) scores each particle in each tilt by the evidence of all
+picks within the match distance, using a pick localization scale ``sigma`` estimated per tilt series
+(``--ba_sigma auto``, bounded to 1.5-6 px with a fallback to 2.5 px; the value used is in ``run_status.json``
+under ``ba.noise_model`` and in ``summary.json``). ``--ba_loss nearest`` restores the previous loss (nearest pick
+only).
+
+``--iter N`` runs N passes, each re-initializing on the previous pass's refined alignment; it helps on poorly
+aligned tilt series (``--iter 3``). It needs picks on the raw tilt images (the default): picks registered with
+``--picks_frame aligned`` do not move when the alignment is refined, so use ``--iter 1`` with them.
 
 Output frame
 ------------
