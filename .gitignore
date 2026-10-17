@@ -15,9 +15,10 @@ htmlcov/
 .venv/
 venv/
 
-# Editors and operating systems
+# Editors, agents and operating systems
 .idea/
 .vscode/
+.claude/
 .DS_Store
 *.swp
 

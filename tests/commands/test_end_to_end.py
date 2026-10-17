@@ -82,6 +82,11 @@ def test_import_joint_optimize_filter(tmp_path):
         status = json.loads((out / "run_status.json").read_text())
         assert status["ba"]["status"] == "ok"
         assert status["output_frame"]["name"] == frame
+        # the evidence loss records its noise model; on these clean synthetic picks the estimate is below the
+        # lower bound, so the fallback value is used and recorded as such
+        noise = status["ba"]["noise_model"]
+        assert status["ba"]["loss"] == "evidence" and status["ba"]["sigma_px"] == noise["sigma_px"]
+        assert noise["sigma_source"] == "auto" and noise["fallback"] is True and noise["sigma_raw_px"] < 1.5
         particles = starfile.read(out / "TS_1_particles.star")
         xyz = particles[["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]].to_numpy(float)
         d, _ = cKDTree(truth).query(xyz)

@@ -56,7 +56,33 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         "--match_distance",
         type=float,
         default=12.0,
-        help="bundle adjustment matches each projected particle to its nearest pick within this distance (pixels)",
+        help="bundle adjustment considers the picks within this distance of each projected particle (pixels): the "
+        "neighborhood of the evidence loss, or the nearest-pick gate of the nearest loss",
+    )
+    optimization.add_argument(
+        "--ba_loss",
+        choices=["evidence", "nearest"],
+        default="evidence",
+        help="bundle-adjustment loss: evidence = MLESAC's mixture evidence summed over the picks within "
+        "--match_distance (smooth, no match switching; the default); nearest = Huber loss on the nearest pick "
+        "(the behavior before the evidence loss)",
+    )
+    optimization.add_argument(
+        "--ba_sigma",
+        type=_auto_or_float,
+        default="auto",
+        help="evidence loss: expected distance between a correct pick and the true projected particle center "
+        "(pixels), or 'auto' (default) to estimate it per tilt series from the MLESAC hypotheses (Rayleigh "
+        "inlier + nearest-neighbor outlier mixture of the nearest-pick distances, bounded to 1.5-6 px, "
+        "falling back to 2.5 px); 2.0-2.9 px measured on CZI DS-10441, 3.1-3.5 px on EMPIAR-13391",
+    )
+    optimization.add_argument(
+        "--ba_gamma",
+        type=_auto_or_float,
+        default=0.7,
+        help="evidence loss: probability that a particle inside the image is picked in a given tilt, or 'auto' for "
+        "the per-series estimate. The estimate runs high (the hypotheses are the best-fitting points), so 0.7 "
+        "(MLESAC's gamma) is the default",
     )
     optimization.add_argument(
         "--fom_search_radius",
@@ -118,6 +144,16 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
     )
     execution.add_argument("--overwrite", action="store_true", help="redo tilt series that already have outputs")
     return parser
+
+
+def _auto_or_float(value: str):
+    """Argument type: the word ``auto`` or a number."""
+    if str(value).strip().lower() == "auto":
+        return "auto"
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected 'auto' or a number, got {value!r}") from exc
 
 
 def current_deselection(name: str, entry: dict) -> tuple[tuple[int, ...], int | None, str | None]:
@@ -196,7 +232,10 @@ def main(args: argparse.Namespace) -> None:
 
     settings = pipeline.JointOptimizeSettings(
         mlesac=MlesacSettings(search_radius_px=args.mlesac_search_radius),
+        noise_sigma_px=None if args.ba_sigma == "auto" else float(args.ba_sigma),
+        noise_gamma=None if args.ba_gamma == "auto" else float(args.ba_gamma),
         bundle=BundleAdjustmentSettings(
+            loss=args.ba_loss,
             shift_reg=args.shift_reg,
             point_reg=args.point_reg,
             max_match_distance=args.match_distance,
