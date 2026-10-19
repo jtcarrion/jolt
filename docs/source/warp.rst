@@ -15,7 +15,6 @@ is. Import into a copy of the processing folder to keep the original alignment:
 
 .. code-block:: bash
 
-   mkdir warp_jolt && cp warp_tiltseries/*.xml warp_jolt/
    WarpTools ts_import_alignments --settings warp_tiltseries.settings \
        --input_processing warp_jolt --output_processing warp_jolt \
        --alignments <project>/joint_optimize --alignment_angpix <tilt-stack pixel size>
@@ -48,10 +47,10 @@ Combine the particles of all tilt series into one STAR file (optionally with a f
    jolt filter <project>/joint_optimize -o particles.star --min_fom 0.4
    WarpTools ts_export_particles --settings warp_tiltseries.settings --input_processing warp_jolt \
        --input_star particles.star --coords_angpix <tilt-stack pixel size> \
-       --output_star relion/particles.star --output_angpix <A/px> --box <px> --diameter <A> --3d   # or --2d
+       --output_star relion/particles.star --output_angpix <A/px> --box <px> --diameter <A> --2d   # or --3d
 
 * Coordinates are tilt-stack pixels in the frame of Warp's tomograms (``joint_optimize --output_frame warp``, the
   default), so ``--coords_angpix`` is the tilt-stack pixel size.
 * Export from the folder where you imported JOLT's alignment. Particles and tomograms from different alignments do
-  not line up: a refined alignment can move the whole tomogram by a voxel or two.
+  not line up: a refined alignment can move the whole tomogram by several voxels.
 * ``ts_export_particles --input_directory`` does not search sub-folders; use the combined STAR from ``jolt filter``.

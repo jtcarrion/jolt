@@ -2,7 +2,7 @@ Installation
 ============
 
 JOLT needs Linux, Python 3.11 to 3.13, and an NVIDIA GPU (driver supporting CUDA 12.4 or newer) for
-practical run times; it runs on the CPU too, several times slower. The recommended environment uses
+practical run times. JOLT runs on the CPU too, just several times slower. The recommended environment uses
 conda-forge only, so that numpy and PyTorch share a single OpenMP runtime.
 
 .. code-block:: bash
@@ -21,8 +21,9 @@ node); set it to the CUDA version your GPU nodes' driver supports.
 Topaz
 -----
 
-``jolt detect_2d`` and ``jolt finetune`` run `Topaz <https://github.com/tbepler/topaz>`_ from its own
-environment. Build it with a CUDA PyTorch from conda-forge, then install Topaz itself without dependencies:
+``jolt detect_2d`` and ``jolt finetune`` run `Topaz <https://github.com/tbepler/topaz>`_ natively from its own
+environment. Other 2D CNN models as well as 2D template matching is supoprted via ``jolt import --picks_2d``. 
+Build Topaz with a CUDA PyTorch from conda-forge, then install Topaz itself without dependencies:
 
 .. code-block:: bash
 

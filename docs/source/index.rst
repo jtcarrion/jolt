@@ -1,9 +1,9 @@
 Getting started
 ===============
 
-JOLT finds 3D particle positions in cryo-electron tomography directly from 2D particle picks on the tilt
+JOLT finds 3D particle positions in cryo-electron tomography directly from raw 2D tilt
 images, and jointly refines the tilt-series alignment (per-tilt shifts) while doing so. It reads WarpTools
-projects and writes particles and a refined alignment that go straight back into Warp.
+projects and writes particles and a refined alignment that go straight back into Warp workflows.
 
 Workflow
 --------
@@ -37,7 +37,7 @@ The repository includes one tilt series of the CZI DS-10441 synthetic benchmark 
 
 ``ts5_demo/joint_optimize/TS_5/`` then holds about 1,200 particles (``TS_5_particles.star``, also as
 ``TS_5_particles.mod`` for ``3dmod``), the refined alignment (``TS_5.xf`` and ``TS_5.tlt``) and
-``run_status.json``. A run takes a few minutes on one GPU.
+``run_status.json``. A run takes only 1-2 minutes on one GPU.
 
 .. toctree::
    :maxdepth: 2
