@@ -22,7 +22,7 @@ Topaz
 -----
 
 ``jolt detect_2d`` and ``jolt finetune`` run `Topaz <https://github.com/tbepler/topaz>`_ natively from its own
-environment. Other 2D CNN models as well as 2D template matching is supoprted via ``jolt import --picks_2d``. 
+environment. Other 2D CNN models as well as 2D template matching is supoprted via ``jolt import --picks_2d``.
 Build Topaz with a CUDA PyTorch from conda-forge, then install Topaz itself without dependencies:
 
 .. code-block:: bash
