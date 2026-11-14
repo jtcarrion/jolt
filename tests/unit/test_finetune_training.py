@@ -152,6 +152,21 @@ def test_train_script_never_imports_jolts_own_topaz_module():
     assert not out.endswith("jolt/topaz.py")
 
 
+def test_train_command_reaches_topaz_as_one_train_subcommand(tmp_path):
+    """The launcher must hand Topaz exactly ``topaz train <args>``, given the arguments train() builds."""
+    from jolt import _topaz_train
+
+    args = topaz.train_args(
+        tmp_path, tmp_path / "run", model="resnet16", units=64, radius=3, pi=0.01, learning_rate=2e-4,
+        minibatch_size=256, epoch_size=1000, epochs=12, device=0,
+    )  # fmt: skip
+    install = topaz.TopazInstall("topaz", "0.3.18", "/env/bin/python")
+    command = [install.python, str(topaz._TRAIN_SCRIPT), "train", "0", *args]  # as train() builds it
+    argv = _topaz_train.topaz_argv(command[4:])
+    assert argv[:2] == ["topaz", "train"] and argv.count("train") == 1
+    assert argv[2:] == args[1:]
+
+
 def test_train_script_rejects_unknown_modes():
     from jolt import _topaz_train
 

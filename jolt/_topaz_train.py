@@ -102,6 +102,12 @@ def average(out_path: str, paths: list[str]) -> None:
     torch.save(model, out_path)
 
 
+def topaz_argv(train_arguments: list[str]) -> list[str]:
+    """``sys.argv`` for Topaz's main: ``topaz train ...`` (``train`` added only if the arguments lack it)."""
+    rest = list(train_arguments)
+    return ["topaz", *rest] if rest[:1] == ["train"] else ["topaz", "train", *rest]
+
+
 def main(argv: list[str]) -> int:
     """Dispatch ``train`` and ``average``."""
     if len(argv) >= 2 and argv[0] == "train":
@@ -115,7 +121,7 @@ def main(argv: list[str]) -> int:
         numpy.random.seed(seed)
         torch.manual_seed(seed)
         print(f"[jolt] {apply_fast_sampler()}", flush=True)
-        sys.argv = ["topaz", "train", *argv[2:]]
+        sys.argv = topaz_argv(argv[2:])
         from topaz.main import main as topaz_main
 
         return topaz_main()
