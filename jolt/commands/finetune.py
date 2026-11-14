@@ -3,14 +3,16 @@
 ``jolt finetune`` takes known particle positions, either 3D (projected into every raw tilt image with the
 project's geometry: tilt angle from the .tlt, inverse .xf, tomogram size from jolt.yaml) or 2D labels given
 directly on the raw tilt images. It preprocesses the raw tilt images with Topaz (seeded), trains Topaz from a
-pretrained model, keeps every epoch's model, and records the epoch with the best held-out AUPRC (on the
-``--heldout_ts`` series) in jolt.yaml so that ``jolt detect_2d`` uses it. Any other epoch can be used with
+pretrained model, keeps every epoch's model, and records in jolt.yaml the weights ``jolt detect_2d`` uses: by default
+the average of the last quarter of the epochs (``--select``). jolt.yaml also lists the held-out AUPRC of every
+epoch (``--heldout_ts`` series); any single epoch can be used with
 ``jolt detect_2d --weights <project>/finetune/train/models/model_epochNN.sav``.
 
 Defaults follow a benchmark on three in-situ ribosome datasets (EMPIAR-10499, an E. coli dataset and CZI
 DS-10301): 12,000 steps (12 x 1,000), resnet16 with 64 units, learning rate 2e-4, and the class prior set from the
-labels (``--num_particles``). JOLT computes the class prior itself and passes it to Topaz (``--pi``), because
-Topaz 0.3.18 overestimates it for 2D images.
+labels (``--num_particles``), and the averaged weights. JOLT computes the class prior itself and passes it to Topaz
+(``--pi``), because Topaz 0.3.18 overestimates it for 2D images, and replaces Topaz's positive-crop sampler with an
+O(1) draw from the same distribution (stock Topaz slows down in proportion to the number of labels).
 
 Label files are STAR files: either one file for all tilt series, with the tilt series in ``rlnTomoName`` or
 ``rlnMicrographName`` (``TS_001`` or ``TS_001.tomostar``), or a path pattern in which ``{ts}`` is replaced by
@@ -87,10 +89,15 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
     training.add_argument("--minibatch_size", type=int, default=256, help="minibatch size")
     training.add_argument("--epoch_size", type=int, default=1000, help="minibatches per epoch")
     training.add_argument(
-        "--epochs",
-        type=int,
-        default=12,
-        help="number of epochs; every epoch's model is kept and the one with the best held-out AUPRC is used",
+        "--epochs", type=int, default=12, help="number of epochs; every epoch's model is kept (see --select)"
+    )
+    training.add_argument(
+        "--select",
+        choices=["average", "best_auprc", "last"],
+        default="average",
+        help="weights recorded for detect_2d: average = uniform weight average of the last quarter of the epochs "
+        "(10-12 of 12; the most accurate and stable in our benchmark), best_auprc = the epoch with the best held-out "
+        "AUPRC (noisy with few held-out tilt series; can pick an early, under-trained epoch), last = final epoch",
     )
     training.add_argument("--seed", type=int, default=0, help="random seed for Topaz (numpy, torch, random)")
 
@@ -328,6 +335,7 @@ def main(args: argparse.Namespace) -> None:
         epochs=args.epochs,
         seed=args.seed,
         device=devices[0],
+        select=args.select,
         log=log,
     )
     info["class_prior"] = prior
@@ -337,24 +345,34 @@ def main(args: argparse.Namespace) -> None:
     if info["model"] is None:
         raise SystemExit(f"training failed ({info.get('aborted') or 'see ' + str(out / 'train' / 'topaz_train.log')})")
     parameters = {k: v for k, v in vars(args).items() if k != "func"}
+    for warning in info["warnings"]:
+        if not warning.startswith("WARNING"):
+            log(f"WARNING: {warning}")
     outputs = {
         "weights": info["model"],
-        "selected_epoch": info["best_epoch"],
-        "selection": "best held-out AUPRC" if info["test_auprc_by_epoch"] else "final epoch (no held-out curve)",
+        "selection": info["selection"],
+        "selected_epochs": info["selected_epochs"],
+        "best_auprc_epoch": info["best_auprc_epoch"],
         "final_weights": info["final_model"],
         "test_auprc_by_epoch": info["test_auprc_by_epoch"],
         "num_particles": prior["num_particles"],
         "pi": prior["pi"],
+        "sampler": info["sampler"],
         "topaz_version": install.version,
         "directory": str(out.resolve()),
     }
     config.record_command(cfg, "finetune", parameters, outputs)
     config.save(project_dir, cfg)
     for epoch, value in enumerate(info["test_auprc_by_epoch"], start=1):
-        mark = "  <- selected" if epoch == info["best_epoch"] else ""
+        mark = "  <- used" if epoch in info["selected_epochs"] else ""
         log(f"  epoch {epoch:3d}  held-out AUPRC {value:.4f}{mark}")
+    what = (
+        f"average of epochs {info['selected_epochs'][0]}-{info['selected_epochs'][-1]}"
+        if len(info["selected_epochs"]) > 1
+        else f"epoch {info['selected_epochs'][0]} of {args.epochs}"
+    )
     log(
-        f"model: {info['model']} (epoch {info['best_epoch']} of {args.epochs}; used by jolt detect_2d by default). "
+        f"model: {info['model']} ({what}, --select {info['selection']}; used by jolt detect_2d by default). "
         f"Every epoch is kept in {out / 'train' / 'models'}"
     )
 

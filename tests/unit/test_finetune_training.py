@@ -91,4 +91,70 @@ def test_cli_defaults_follow_the_benchmark():
     a = add_args().parse_args(["proj", "--labels_2d", "x.star", "--heldout_ts", "TS_1"])
     assert (a.epochs, a.epoch_size, a.learning_rate, a.units, a.minibatch_size) == (12, 1000, 2e-4, 64, 256)
     assert a.num_particles is None and a.num_particles_factor == 1.5
-    assert (a.radius, a.max_abs_angle, a.model) == (3, 40.0, "resnet16")
+    assert (a.radius, a.max_abs_angle, a.model, a.select) == (3, 40.0, "resnet16", "average")
+
+
+@pytest.mark.parametrize(
+    ("epochs", "expected"), [(12, [10, 11, 12]), (20, [16, 17, 18, 19, 20]), (5, [4, 5]), (4, [4]), (1, [1])]
+)
+def test_averaged_epochs_are_the_last_quarter(epochs, expected):
+    assert topaz.averaged_epochs(epochs) == expected
+
+
+def _fake_checkpoints(models_dir, epochs):
+    models_dir.mkdir(parents=True, exist_ok=True)
+    for e in range(1, epochs + 1):
+        topaz.checkpoint_path(models_dir, e, epochs).write_text(f"epoch {e}")
+
+
+def test_select_best_auprc_last_and_fallbacks(tmp_path):
+    models = tmp_path / "models"
+    _fake_checkpoints(models, 12)
+    auprc = {e: 0.04 for e in range(1, 13)} | {3: 0.05}
+    path, rule, used, warnings = topaz._select_weights(None, models, 12, "best_auprc", auprc)
+    assert (path.name, rule, used, warnings) == ("model_epoch03.sav", "best_auprc", [3], [])
+    path, rule, used, _ = topaz._select_weights(None, models, 12, "last", auprc)
+    assert (path.name, rule, used) == ("model_epoch12.sav", "last", [12])
+    path, rule, _, warnings = topaz._select_weights(None, models, 12, "best_auprc", {})
+    assert (path.name, rule) == ("model_epoch12.sav", "last") and warnings
+    # no Topaz interpreter to average with: fall back to the final epoch, and say so
+    path, rule, used, warnings = topaz._select_weights(None, models, 12, "average", auprc)
+    assert (path.name, rule, used) == ("model_epoch12.sav", "last", [12]) and "cannot average" in warnings[0]
+
+
+def test_select_average_writes_the_mean_model(tmp_path):
+    import sys
+
+    torch = pytest.importorskip("torch")
+    models = tmp_path / "models"
+    models.mkdir()
+    for e in range(1, 13):  # a whole saved module per epoch, as Topaz writes; weights = epoch number
+        layer = torch.nn.Linear(3, 2)
+        with torch.no_grad():
+            layer.weight.fill_(float(e))
+            layer.bias.fill_(-float(e))
+        torch.save(layer, topaz.checkpoint_path(models, e, 12))
+    path, rule, used, warnings = topaz._select_weights(sys.executable, models, 12, "average", {})
+    assert (path.name, rule, used, warnings) == ("model_average.sav", "average", [10, 11, 12], [])
+    mean = torch.load(path, weights_only=False)
+    assert torch.allclose(mean.weight, torch.full((2, 3), 11.0)) and torch.allclose(mean.bias, torch.full((2,), -11.0))
+
+
+def test_train_script_never_imports_jolts_own_topaz_module():
+    """Run as a script, the launcher's directory (the jolt package, with jolt/topaz.py) must not shadow Topaz."""
+    import subprocess
+    import sys
+
+    out = subprocess.run(
+        [sys.executable, str(topaz._TRAIN_SCRIPT), "which-topaz"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert out != str(topaz._TRAIN_SCRIPT.with_name("topaz.py"))
+    assert not out.endswith("jolt/topaz.py")
+
+
+def test_train_script_rejects_unknown_modes():
+    from jolt import _topaz_train
+
+    with pytest.raises(SystemExit):
+        _topaz_train.main(["bogus"])
+    assert _topaz_train.FAST_SAMPLER_TOPAZ_VERSION == "0.3.18"

@@ -15,10 +15,19 @@ Entries marked **changes the output** alter the particles or the alignment JOLT 
   - `--num_particles` defaults to `--num_particles_factor` (new, 1.5) x the mean labels per training tilt image
     (was a fixed 350). `finetune` refuses a value at or below that mean: with it, Topaz silently replaced the
     GE-binomial objective by PN, treating unlabeled particles as background.
-- `finetune` keeps every epoch's model and records the epoch with the best held-out AUPRC (`--heldout_ts`; ties go
-  to the earlier epoch) as the weights `detect_2d` uses, instead of the final epoch. `jolt.yaml` also records the
-  selected epoch, the final epoch's weights, the held-out AUPRC per epoch, pi, `--num_particles` and the Topaz
-  version.
+- `finetune --select` (new) chooses the weights `detect_2d` uses; every epoch's model is kept. The default,
+  `average`, is the uniform weight average of the last quarter of the epochs (10-12 of 12, `model_average.sav`),
+  instead of the final epoch: it matched or beat every single epoch on all three datasets and varied least between
+  repeated runs (*Chlamydomonas* test 2D recall 0.493, vs 0.478 for the final epoch and 0.413 for the old
+  defaults). `best_auprc` (the epoch with the best held-out AUPRC) and `last` are available; held-out AUPRC on a few
+  tilt series is noisy and picked epoch 1 of 12 (0.434) in the same run. `jolt.yaml` also records the rule, the
+  epochs used, the best-AUPRC epoch, the final epoch's weights, the held-out AUPRC per epoch, pi,
+  `--num_particles`, the sampler and the Topaz version.
+- `finetune` runs `topaz train` through `jolt/_topaz_train.py` in Topaz's interpreter, which seeds it as before and,
+  for Topaz 0.3.18 (checked by version and source hash), replaces the positive-crop sampler with an O(1) draw from
+  the same distribution. Stock Topaz's `DataFrame.sample()` slows down in proportion to the number of labels
+  (0.5 s per step at ~41k labels, ~6 s at ~380k), which made 12,000 steps take most of a day on densely labeled
+  data.
 
 ### Fixed
 - `finetune` computes the Topaz class prior pi itself and passes it with `topaz train -n 0 --pi`. Topaz 0.3.18's
