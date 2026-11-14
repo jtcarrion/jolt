@@ -3,6 +3,28 @@
 All notable changes to JOLT are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/).
 Entries marked **changes the output** alter the particles or the alignment JOLT writes for the same input.
 
+## [Unreleased]
+
+### Changed
+- `finetune` defaults follow a benchmark on three in-situ ribosome datasets (EMPIAR-10499, an *E. coli* dataset and
+  CZI DS-10301; 2D per-tilt recall and 3D JOLT recall on held-out series). **Changes the output** (the trained model):
+  - 12 epochs x 1,000 minibatches (was 20 x 100). 2,000 steps under-trained small label sets: on *Chlamydomonas*
+    the shorter schedule alone cost 5 points of 2D recall, and the old defaults as a whole 7 points of 3D JOLT
+    recall at 50 A (0.545 vs 0.616).
+  - `--units 64` (new option; Topaz's default pretrained `resnet16` has 32 units), `--learning_rate 2e-4` (was 1e-4).
+  - `--num_particles` defaults to `--num_particles_factor` (new, 1.5) x the mean labels per training tilt image
+    (was a fixed 350). `finetune` refuses a value at or below that mean: with it, Topaz silently replaced the
+    GE-binomial objective by PN, treating unlabeled particles as background.
+- `finetune` keeps every epoch's model and records the epoch with the best held-out AUPRC (`--heldout_ts`; ties go
+  to the earlier epoch) as the weights `detect_2d` uses, instead of the final epoch. `jolt.yaml` also records the
+  selected epoch, the final epoch's weights, the held-out AUPRC per epoch, pi, `--num_particles` and the Topaz
+  version.
+
+### Fixed
+- `finetune` computes the Topaz class prior pi itself and passes it with `topaz train -n 0 --pi`. Topaz 0.3.18's
+  `pixels_given_radius` counts a 3D grid for 2D images, which made pi (2r + 1) times too large (7x at radius 3).
+  A Topaz run that switches to PN anyway now stops `finetune` with an error.
+
 ## [0.0.1_beta] - unreleased
 
 ### Added
