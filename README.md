@@ -27,6 +27,19 @@ jolt --help
 Topaz (for `finetune` and `detect_2d`) runs from its own environment; point JOLT at it with `--topaz_bin`
 or `JOLT_TOPAZ_BIN`.
 
+## Fine-tuned Topaz Weights for In Situ Datasets
+
+A fine-tuned Topaz model for picking in raw tilt images **at 10 Å/pixel** is available on Zenodo: [zenodo.org/records/24144234](https://zenodo.org/records/24144234) (DOI: 10.5281/zenodo.24144234). It was trained with balanced labels on three in situ datasets (EMPIAR-10499 *M. pneumoniae*, EMPIAR-11983 *E. coli*, and CZI DS-10301 *Chlamydomonas*).
+
+Using these weights (or other fine-tuned models) inside JOLT can be easily done with the `jolt detect_2d [...] --weights` flag.
+
+```bash
+jolt detect_2d <project> --weights ~/jolt_models/topaz_tilt_generalist_v2_ep20.sav \
+    --radius 8 --top_k 1200
+jolt joint_optimize <project>
+```
+
+
 **Status:** pre-release (0.0.x). The commands are implemented and validated against the original research
 code on the CZI DS-10441 benchmark; interfaces may still change.
 
