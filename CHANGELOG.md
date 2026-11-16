@@ -3,6 +3,37 @@
 All notable changes to JOLT are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/).
 Entries marked **changes the output** alter the particles or the alignment JOLT writes for the same input.
 
+## [Unreleased]
+
+### Changed
+- `finetune` defaults follow a benchmark on three in-situ ribosome datasets (EMPIAR-10499, an *E. coli* dataset and
+  CZI DS-10301; 2D per-tilt recall and 3D JOLT recall on held-out series). **Changes the output** (the trained model):
+  - 12 epochs x 1,000 minibatches (was 20 x 100). 2,000 steps under-trained small label sets: on *Chlamydomonas*
+    the shorter schedule alone cost 5 points of 2D recall, and the old defaults as a whole 7 points of 3D JOLT
+    recall at 50 A (0.545 vs 0.616).
+  - `--units 64` (new option; Topaz's default pretrained `resnet16` has 32 units), `--learning_rate 2e-4` (was 1e-4).
+  - `--num_particles` defaults to `--num_particles_factor` (new, 1.5) x the mean labels per training tilt image
+    (was a fixed 350). `finetune` refuses a value at or below that mean: with it, Topaz silently replaced the
+    GE-binomial objective by PN, treating unlabeled particles as background.
+- `finetune --select` (new) chooses the weights `detect_2d` uses; every epoch's model is kept. The default,
+  `average`, is the uniform weight average of the last quarter of the epochs (10-12 of 12, `model_average.sav`),
+  instead of the final epoch: it matched or beat every single epoch on all three datasets and varied least between
+  repeated runs (*Chlamydomonas* test 2D recall 0.493, vs 0.478 for the final epoch and 0.413 for the old
+  defaults). `best_auprc` (the epoch with the best held-out AUPRC) and `last` are available; held-out AUPRC on a few
+  tilt series is noisy and picked epoch 1 of 12 (0.434) in the same run. `jolt.yaml` also records the rule, the
+  epochs used, the best-AUPRC epoch, the final epoch's weights, the held-out AUPRC per epoch, pi,
+  `--num_particles`, the sampler and the Topaz version.
+- `finetune` runs `topaz train` through `jolt/_topaz_train.py` in Topaz's interpreter, which seeds it as before and,
+  for Topaz 0.3.18 (checked by version and source hash), replaces the positive-crop sampler with an O(1) draw from
+  the same distribution. Stock Topaz's `DataFrame.sample()` slows down in proportion to the number of labels
+  (0.5 s per step at ~41k labels, ~6 s at ~380k), which made 12,000 steps take most of a day on densely labeled
+  data.
+
+### Fixed
+- `finetune` computes the Topaz class prior pi itself and passes it with `topaz train -n 0 --pi`. Topaz 0.3.18's
+  `pixels_given_radius` counts a 3D grid for 2D images, which made pi (2r + 1) times too large (7x at radius 3).
+  A Topaz run that switches to PN anyway now stops `finetune` with an error.
+
 ## [0.0.1_beta] - unreleased
 
 ### Added

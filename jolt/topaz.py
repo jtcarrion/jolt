@@ -318,12 +318,69 @@ def detect_tilt_series(
     return stats
 
 
-_SEEDED_TOPAZ_TRAIN = (
-    "import sys, random, numpy, torch; s = int(sys.argv[1]); random.seed(s); "
-    "numpy.random.seed(s); torch.manual_seed(s); sys.argv = ['topaz'] + sys.argv[2:]; "
-    "from topaz.main import main; sys.exit(main())"
-)
+#: Run by Topaz's own interpreter for ``topaz train`` (seeding, O(1) sampler) and checkpoint averaging.
+_TRAIN_SCRIPT = Path(__file__).with_name("_topaz_train.py")
+#: How ``train`` chooses the model it returns (``jolt finetune --select``).
+SELECT_RULES = ("average", "best_auprc", "last")
+
+
+def averaged_epochs(epochs: int) -> list[int]:
+    """Epochs averaged by ``select="average"``: the last quarter of the run, rounded up (10-12 of 12, 16-20 of 20)."""
+    n = max(1, -(-int(epochs) // 4))
+    return list(range(int(epochs) - n + 1, int(epochs) + 1))
+
+
 _P_OBSERVED = re.compile(r"^#?\s*(\S+)\s+(train|test)\s+([0-9.eE+-]+)\s+(\d+)\s+(\d+)\s*$")
+
+
+def disc_pixels(radius: int) -> int:
+    """Count the pixels in Topaz's 2D label disc of this radius (lattice points with x^2 + y^2 <= r^2; 29 at r = 3).
+
+    Topaz 0.3.18's own ``stats.pixels_given_radius`` counts a 3D grid for 2D images, which makes the disc
+    (2r + 1) times too large and the class prior pi as much too high. JOLT therefore computes pi itself
+    (:func:`class_prior`) and passes it to ``topaz train --pi``.
+    """
+    g = np.arange(-int(radius), int(radius) + 1)
+    return int(((g[:, None] ** 2 + g[None, :] ** 2) <= radius**2).sum())
+
+
+def class_prior(num_particles: float, radius: int, mean_image_area: float) -> float:
+    """GE-binomial class prior: the expected fraction of pixels inside a particle disc.
+
+    The formula is Topaz's (``num_particles x disc pixels / image area``, averaged over the training images),
+    with the correct 2D disc size.
+    """
+    return float(num_particles) * disc_pixels(radius) / float(mean_image_area)
+
+
+def checkpoint_path(models_dir: str | PathLike, epoch: int, epochs: int) -> Path:
+    """Path of Topaz's checkpoint for ``epoch`` of an ``epochs``-epoch run (Topaz zero-pads to ceil(log10(epochs)))."""
+    digits = int(np.ceil(np.log10(epochs))) if epochs > 1 else 0
+    return Path(models_dir) / (f"model_epoch{{:0{digits}}}.sav" if digits else "model_epoch{}.sav").format(epoch)
+
+
+def auprc_by_epoch(curve_path: str | PathLike) -> dict[int, float]:
+    """Held-out AUPRC per epoch from Topaz's ``train_curve.txt`` (the ``test`` rows); empty if there are none."""
+    path = Path(curve_path)
+    if not path.exists():
+        return {}
+    lines = [x.rstrip("\n").split("\t") for x in path.read_text().splitlines() if x.strip() and not x.startswith("#")]
+    if not lines or "split" not in lines[0] or "auprc" not in lines[0]:
+        return {}
+    head = lines[0]
+    e, s, a = head.index("epoch"), head.index("split"), head.index("auprc")
+    out = {}
+    for r in lines[1:]:
+        if len(r) == len(head) and r[s] == "test" and r[a] not in ("-", ""):
+            out[int(r[e])] = float(r[a])
+    return out
+
+
+def best_epoch(auprc: dict[int, float]) -> int | None:
+    """Epoch with the highest held-out AUPRC; ties go to the earlier epoch. ``None`` if there is no AUPRC."""
+    if not auprc:
+        return None
+    return min(auprc, key=lambda epoch: (-auprc[epoch], epoch))
 
 
 def dedup_labels(xy: np.ndarray, radius: float) -> np.ndarray:
@@ -381,45 +438,94 @@ def write_training_files(images: list[tuple[str, Path, np.ndarray, str]], out_di
     return counts
 
 
+def train_args(
+    data_dir: Path,
+    run_dir: Path,
+    *,
+    model: str,
+    units: int,
+    radius: int,
+    pi: float,
+    learning_rate: float,
+    minibatch_size: int,
+    epoch_size: int,
+    epochs: int,
+    device: int,
+) -> list[str]:
+    """Return the ``topaz train`` arguments JOLT uses (GE-binomial, from a pretrained model).
+
+    The class prior is passed as ``--pi`` with ``-n 0`` (Topaz uses ``--pi`` only when ``-n`` is not positive), so
+    Topaz's own pi calculation, which is wrong for 2D images in Topaz 0.3.18, is never used.
+    """
+    return [
+        "train",
+        "--train-images", str(data_dir / "train_images.txt"), "--train-targets", str(data_dir / "train_coords.txt"),
+        "--test-images", str(data_dir / "test_images.txt"), "--test-targets", str(data_dir / "test_coords.txt"),
+        "-n", "0", "--pi", f"{pi:.8g}", "-r", str(radius), "-m", model, "--units", str(units), "--pretrained",
+        "--method", "GE-binomial", "--learning-rate", f"{learning_rate:g}", "--minibatch-size", str(minibatch_size),
+        "--epoch-size", str(epoch_size), "--num-epochs", str(epochs), f"--device={device}",
+        "--save-prefix", str(run_dir / "models" / "model"), "-o", str(run_dir / "train_curve.txt"),
+    ]  # fmt: skip
+
+
 def train(
     topaz: TopazInstall,
     data_dir: Path,
     run_dir: Path,
     *,
     model: str,
+    units: int,
     radius: int,
-    num_particles: float,
+    pi: float,
     learning_rate: float,
     minibatch_size: int,
     epoch_size: int,
     epochs: int,
     seed: int,
     device: int,
+    select: str = "average",
     log=print,
 ) -> dict:
-    """Run ``topaz train`` (GE-binomial, from a pretrained model) on tables made by :func:`write_training_files`.
+    """Run ``topaz train`` on tables made by :func:`write_training_files` and choose the weights to use.
 
-    Training stops at once if Topaz reports that no labeled region was observed on the training split (a
-    sign that image names and label names do not match).
+    Topaz runs through ``_topaz_train.py`` in its own interpreter: seeded, and with an O(1) positive-crop sampler
+    when Topaz is 0.3.18 (same sampling distribution; stock Topaz slows down in proportion to the number of labels).
+    Every epoch's model is kept. ``select`` chooses the model returned as ``model``:
+
+    - ``average`` (default): the uniform weight average of the last quarter of the epochs (:func:`averaged_epochs`),
+      written as ``models/model_average.sav``. On three ribosome datasets it was as good as or better than any
+      single epoch and the most stable across repeated runs.
+    - ``best_auprc``: the epoch with the highest held-out AUPRC (ties go to the earlier epoch). Held-out AUPRC
+      on a few tilt series is noisy and can peak on an early, under-trained epoch.
+    - ``last``: the final epoch.
+
+    If Topaz's interpreter is unknown (no seeding, no sampler patch, no averaging) ``average`` falls back to
+    ``last``. Training stops at once if Topaz reports that no labeled region was observed on the training split (a
+    sign that image names and label names do not match), or that it switched GE-binomial to PN because pi does not
+    exceed the observed label fraction.
 
     Returns
     -------
     dict
-        ``model`` (path of the final epoch's model, or None), ``p_observed``, ``returncode``, ``aborted`` and
-        the held-out precision curve if Topaz wrote one.
+        ``model`` (path of the selected model, or None), ``selection``, ``selected_epochs``, ``final_model``,
+        ``best_auprc_epoch``, ``test_auprc_by_epoch``, ``sampler``, ``pi``, ``p_observed``, ``returncode``,
+        ``aborted``, ``warnings`` and ``command``.
     """
+    if select not in SELECT_RULES:
+        raise ValueError(f"select must be one of {SELECT_RULES}, not {select!r}")
     (run_dir / "models").mkdir(parents=True, exist_ok=True)
-    args = [
-        "train",
-        "--train-images", str(data_dir / "train_images.txt"), "--train-targets", str(data_dir / "train_coords.txt"),
-        "--test-images", str(data_dir / "test_images.txt"), "--test-targets", str(data_dir / "test_coords.txt"),
-        "-n", f"{num_particles:g}", "-r", str(radius), "-m", model, "--pretrained", "--method", "GE-binomial",
-        "--learning-rate", f"{learning_rate:g}", "--minibatch-size", str(minibatch_size), "--epoch-size",
-        str(epoch_size), "--num-epochs", str(epochs), f"--device={device}",
-        "--save-prefix", str(run_dir / "models" / "model"), "-o", str(run_dir / "train_curve.txt"),
-    ]  # fmt: skip
-    command = [topaz.python, "-c", _SEEDED_TOPAZ_TRAIN, str(seed), *args] if topaz.python else [topaz.executable, *args]
-    info: dict = {"p_observed": {}, "warnings": [], "aborted": None, "command": " ".join(command)}
+    args = train_args(
+        data_dir, run_dir, model=model, units=units, radius=radius, pi=pi, learning_rate=learning_rate,
+        minibatch_size=minibatch_size, epoch_size=epoch_size, epochs=epochs, device=device,
+    )  # fmt: skip
+    if topaz.python:
+        command = [topaz.python, str(_TRAIN_SCRIPT), "train", str(seed), *args]
+    else:
+        command = [topaz.executable, *args]
+    info: dict = {
+        "p_observed": {}, "warnings": [], "aborted": None, "pi": pi, "command": " ".join(command),
+        "sampler": "stock (Topaz interpreter unknown)" if not topaz.python else None,
+    }  # fmt: skip
     with open(run_dir / "topaz_train.log", "w") as handle:
         handle.write("$ " + " ".join(command) + "\n")
         handle.flush()
@@ -436,22 +542,66 @@ def train(
                     info["aborted"] = "p_observed = 0 on the training split (image names do not match the labels)"
                     proc.kill()
                     break
+            if line.startswith("[jolt] "):
+                info["sampler"] = line[len("[jolt] ") :].strip()
+                log(f"Topaz {info['sampler']}")
             if line.startswith("WARNING"):
                 info["warnings"].append(line.strip())
+                if "setting method to PN" in line:
+                    info["aborted"] = (
+                        f"Topaz switched GE-binomial to PN because pi = {pi:.4g} does not exceed the observed label "
+                        "fraction; raise --num_particles"
+                    )
+                    proc.kill()
+                    break
         proc.wait()
     info["returncode"] = proc.returncode
-    final = run_dir / "models" / f"model_epoch{epochs}.sav"
-    info["model"] = str(final) if final.exists() and not info["aborted"] and proc.returncode == 0 else None
-    curve = run_dir / "train_curve.txt"
-    if curve.exists():
-        lines = [
-            x.rstrip("\n").split("\t") for x in curve.read_text().splitlines() if x.strip() and not x.startswith("#")
-        ]
-        if lines:
-            head = lines[0]
-            if "split" in head and "auprc" in head:
-                info["test_auprc_by_epoch"] = [
-                    float(r[head.index("auprc")]) for r in lines[1:]
-                    if len(r) == len(head) and r[head.index("split")] == "test" and r[head.index("auprc")] != "-"
-                ]  # fmt: skip
+    final = checkpoint_path(run_dir / "models", epochs, epochs)
+    ok = final.exists() and not info["aborted"] and proc.returncode == 0
+    info["final_model"] = str(final) if ok else None
+    auprc = auprc_by_epoch(run_dir / "train_curve.txt")
+    info["test_auprc_by_epoch"] = [auprc[e] for e in sorted(auprc)]
+    info["best_auprc_epoch"] = best_epoch(auprc)
+    info["selection"], info["selected_epochs"], info["model"] = select, [epochs], None
+    if not ok:
+        return info
+    path, info["selection"], info["selected_epochs"], warnings = _select_weights(
+        topaz.python, run_dir / "models", epochs, select, auprc
+    )
+    info["warnings"] += warnings
+    info["model"] = str(path)
     return info
+
+
+def _select_weights(
+    python: str | None, models_dir: Path, epochs: int, select: str, auprc: dict[int, float]
+) -> tuple[Path, str, list[int], list[str]]:
+    """Choose the model of a finished run: ``(path, rule actually applied, epochs used, warnings)``.
+
+    Falls back to the final epoch, with a warning, whenever the requested rule cannot be applied.
+    """
+    final = checkpoint_path(models_dir, epochs, epochs)
+    if select == "best_auprc":
+        best = best_epoch(auprc)
+        if best is None:
+            return final, "last", [epochs], ["no held-out AUPRC in the training curve; using the final epoch"]
+        candidate = checkpoint_path(models_dir, best, epochs)
+        if not candidate.exists():
+            return final, "last", [epochs], [f"best-AUPRC checkpoint {candidate} missing; using the final epoch"]
+        return candidate, "best_auprc", [best], []
+    if select == "average":
+        group = averaged_epochs(epochs)
+        if len(group) == 1:
+            return final, "last", [epochs], []
+        paths = [checkpoint_path(models_dir, e, epochs) for e in group]
+        if not python or not all(p.exists() for p in paths):
+            reason = "cannot average checkpoints (Topaz interpreter unknown or checkpoint missing)"
+            return final, "last", [epochs], [reason]
+        target = models_dir / "model_average.sav"
+        done = subprocess.run(
+            [python, str(_TRAIN_SCRIPT), "average", str(target), *map(str, paths)], capture_output=True, text=True
+        )
+        if done.returncode != 0 or not target.exists():
+            return final, "last", [epochs], [f"checkpoint averaging failed: {done.stderr.strip()[-300:]}"]
+        return target, "average", group, []
+    return final, "last", [epochs], []

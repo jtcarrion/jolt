@@ -41,3 +41,8 @@ If it prints ``False``, the environment holds a CPU-only PyTorch: Topaz then pri
 keeps going, about ten times slower (roughly 10 minutes instead of 1 per tilt series). Point JOLT at the Topaz
 executable with ``--topaz_bin <topaz_prefix>/bin/topaz`` or the ``JOLT_TOPAZ_BIN`` environment variable. Picks from
 Topaz on the GPU and on the CPU agree to about 99.8 %.
+
+Topaz 0.3.18 overestimates the class prior when it trains on 2D images: ``stats.pixels_given_radius`` counts a 3D
+grid, so the label disc and pi come out (2r + 1) times too large, 7x at the default radius 3. ``jolt finetune``
+does not rely on it: it computes pi itself and passes it with ``topaz train --pi``, so a stock Topaz install
+trains correctly and no patch is needed.
