@@ -84,8 +84,10 @@ under ``ba.noise_model`` and in ``summary.json``). ``--ba_loss nearest`` restore
 only).
 
 ``--iter N`` runs N passes, each re-initializing on the previous pass's refined alignment; it helps on poorly
-aligned tilt series (``--iter 3``). It needs picks on the raw tilt images (the default): picks registered with
-``--picks_frame aligned`` do not move when the alignment is refined, so use ``--iter 1`` with them.
+aligned tilt series (``--iter 3``). Every pass maps the picks into the frame of the current alignment: picks on
+the raw tilt images (the default) with the current ``.xf``, and picks registered with ``--picks_frame aligned``
+back to the raw images with the input ``.xf`` (the one the aligned stack was built with) and forward with the
+current one.
 
 Output frame
 ------------
