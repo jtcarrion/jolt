@@ -2,7 +2,8 @@
 
 Stages (all in the aligned frame of the tilt series):
 
-1. Read the 2D picks and, for picks made on the raw stack, map them into the aligned frame with the ``.xf``.
+1. Read the 2D picks and map them into the aligned frame of the current ``.xf`` (picks made on the raw stack
+   always; picks made on the aligned stack from the second ``--iter`` pass on, once the alignment is refined).
 2. MLESAC: 3D hypotheses from the picks (:mod:`jolt.mlesac`).
 3. Keep hypotheses inside the tomogram (10 px margin in x and y, 5 px in z).
 4. Greedy bundle adjustment of the points and per-tilt shifts (:mod:`jolt.bundle_adjustment`). A failed or
@@ -249,13 +250,19 @@ def load_picks(
     raw_dims_xy: tuple[int, int],
     aligned_dims_xy: tuple[int, int],
     deselected: tuple[int, ...] = (),
+    stack_xf_rows: list[dict] | None = None,
 ) -> dict[float, np.ndarray]:
-    """Read 2D picks into ``{tilt angle: (n, 3) array of x, y, score}`` in the aligned frame.
+    """Read 2D picks into ``{tilt angle: (n, 3) array of x, y, score}`` in the aligned frame of ``xf_rows``.
 
     Tilt images are identified by their stack index (see :func:`tilt_index_from_name`), and the angle is the
     ``.tlt`` entry at that index. The dictionary follows the order in which tilt images first appear in the
     STAR file. Picks made on the raw stack are mapped with :func:`jolt.geometry.raw_picks_to_aligned`. Picks on
     the ``deselected`` stack positions (1-based) are dropped, so those tilts take no part in the reconstruction.
+
+    Picks made on the aligned stack are in the frame of the ``.xf`` that stack was built with, ``stack_xf_rows``.
+    When ``xf_rows`` differs from it (a refined alignment, ``joint_optimize --iter``), each tilt's picks are mapped
+    back to the raw image with its ``stack_xf_rows`` row and forward with its ``xf_rows`` row, as raw picks are.
+    Without ``stack_xf_rows``, aligned picks are used as they are.
     """
     table = read_star_table(star_path, required=["rlnMicrographName", "rlnCoordinateX", "rlnCoordinateY"])
     if "rlnAutopickFigureOfMerit" in table.columns:
@@ -282,6 +289,13 @@ def load_picks(
         if picks_frame == "raw":
             xf_row = xf_rows[[float(r["TILT"]) for r in xf_rows].index(tilt)]
             arr = geometry.raw_picks_to_aligned(arr, xf_row, raw_dims_xy, aligned_dims_xy)
+        elif stack_xf_rows is not None:
+            k = [float(r["TILT"]) for r in xf_rows].index(tilt)
+            if stack_xf_rows[k] != xf_rows[k]:
+                raw = geometry.aligned_to_raw(arr[:, :2], stack_xf_rows[k], raw_dims_xy, aligned_dims_xy)
+                arr = geometry.raw_picks_to_aligned(
+                    np.column_stack([raw, arr[:, 2]]), xf_rows[k], raw_dims_xy, aligned_dims_xy
+                )
         picks[tilt] = arr
     return picks
 
@@ -390,6 +404,7 @@ def run_tilt_series(
             inputs.raw_dims_xy,
             (x_dim, y_dim),
             deselected=inputs.deselected_tilts,
+            stack_xf_rows=input_rows,  # aligned picks were made with the input alignment
         )
         n_picks = int(sum(len(v) for v in coords.values()))
         log(f"[{inputs.name}] {n_picks} picks on {len(coords)} tilt images ({inputs.picks_frame} frame)")

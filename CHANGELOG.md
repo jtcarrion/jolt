@@ -30,6 +30,12 @@ Entries marked **changes the output** alter the particles or the alignment JOLT 
   data.
 
 ### Fixed
+- `joint_optimize --iter N` (N > 1) with picks registered with `--picks_frame aligned` applied the first pass's
+  shift correction again in every later pass, because aligned picks were not moved into the frame of the refined
+  alignment. On a synthetic series (85 deg tilt axis, 5.2 px injected per-tilt error) 3 passes left 6.6 px of error,
+  more than the input; they now leave 2.0 px (2.7 px after one pass). Each pass now maps aligned picks back to the
+  raw images with the input `.xf` and forward with the current one, as it does raw picks. **Changes the output**
+  for `--picks_frame aligned` with `--iter` > 1 only; raw picks and `--iter 1` are unchanged.
 - `finetune` computes the Topaz class prior pi itself and passes it with `topaz train -n 0 --pi`. Topaz 0.3.18's
   `pixels_given_radius` counts a 3D grid for 2D images, which made pi (2r + 1) times too large (7x at radius 3).
   A Topaz run that switches to PN anyway now stops `finetune` with an error.
