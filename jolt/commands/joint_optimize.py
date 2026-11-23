@@ -286,6 +286,19 @@ def main(args: argparse.Namespace) -> None:
             f"WARNING: {len(no_dims)} tilt series have no ImageDimensionsAngstrom/DimensionsAngstrom in their Warp "
             f"XML ({no_dims[:5]}); their warp-frame coordinates assume exact binning (no sub-voxel offsets)"
         )
+    if args.output_frame == "warp":
+        placeholder = [t.args[0].name for t in tasks if "is a placeholder" in t.args[0].output_frame.source]
+        mismatch = [t.args[0].name for t in tasks if "WARNING: XML thickness" in t.args[0].output_frame.source]
+        if placeholder:
+            log(
+                f"NOTE: {len(placeholder)} tilt series have a placeholder thickness in their Warp XML "
+                f"DimensionsAngstrom ({placeholder[:5]}); the warp-frame z center uses --tomo_dims_xyz Z instead"
+            )
+        if mismatch:
+            log(
+                f"WARNING: {len(mismatch)} tilt series have a Warp XML thickness that differs from --tomo_dims_xyz Z "
+                f"by more than 2 voxels ({mismatch[:5]}); warp-frame z may be offset - check run_status.json"
+            )
     outcomes = batch.run_tasks(tasks, gpus, args.n_jobs, args.worker_threads, log=log)
 
     summary = {}

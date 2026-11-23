@@ -5,6 +5,15 @@ Entries marked **changes the output** alter the particles or the alignment JOLT 
 
 ## [Unreleased]
 
+### Fixed
+- `joint_optimize --output_frame warp`: a Warp XML whose `DimensionsAngstrom` thickness is still WarpTools'
+  placeholder (e.g. `... , 1` A in a fresh project, before a later step such as M writes the real value) put the
+  warp-frame z center at ~0 instead of ~NZ/2, so every particle was offset by about half the tomogram thickness
+  (seen on EMPIAR-10499: all z off by 170 voxels; frame and recall checks failed until corrected). A thickness under
+  2 voxels is now treated as a placeholder and replaced by `--tomo_dims_xyz` Z; a real XML thickness that differs
+  from it by more than 2 voxels is kept but flagged. Both are recorded in `run_status.json`
+  (`output_frame.source`) and logged. **Changes the output** for projects with a placeholder thickness.
+
 ### Changed
 - `finetune` defaults follow a benchmark on three in-situ ribosome datasets (EMPIAR-10499, an *E. coli* dataset and
   CZI DS-10301; 2D per-tilt recall and 3D JOLT recall on held-out series). **Changes the output** (the trained model):

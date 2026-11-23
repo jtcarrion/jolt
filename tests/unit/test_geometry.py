@@ -140,3 +140,25 @@ def test_output_frames_round_trip():
             image_rotation_deg=87.0,
         )
         np.testing.assert_allclose(f.from_frame(f.to_frame(pts)), pts, atol=1e-9)
+
+
+def test_warp_frame_placeholder_xml_thickness_uses_tomo_dims():
+    # A fresh WarpTools project writes DimensionsAngstrom Z = 1 A (placeholder) until e.g. M fills it in. The warp
+    # z center must then come from tomo_dims_xyz, not collapse to ~0 (seen on EMPIAR-10499: all z off by NZ/2).
+    kw = dict(warp_image_dims_angstrom=(6526.519, 6308.855), image_rotation_deg=4.3)
+    real = geometry.output_frame_transform("warp", (652, 630, 340), 10.0,
+                                           warp_volume_dims_angstrom=(6526.519, 6308.855, 3400.0), **kw)
+    placeholder = geometry.output_frame_transform("warp", (652, 630, 340), 10.0,
+                                                  warp_volume_dims_angstrom=(6526.519, 6308.855, 1.0), **kw)
+    pts = np.array([[326.0, 315.0, 169.5], [28.0, 45.0, 65.0], [626.0, 604.0, 300.0]])
+    np.testing.assert_allclose(placeholder.to_frame(pts), real.to_frame(pts))
+    assert placeholder.center_out[2] == 170.0
+    assert "placeholder" in placeholder.source
+
+
+def test_warp_frame_flags_xml_thickness_that_disagrees_with_tomo_dims():
+    f = geometry.output_frame_transform("warp", (652, 630, 340), 10.0,
+                                        warp_image_dims_angstrom=(6526.519, 6308.855),
+                                        warp_volume_dims_angstrom=(6526.519, 6308.855, 5000.0))
+    assert "WARNING: XML thickness" in f.source
+    assert f.center_out[2] == 250.0  # a real (non-placeholder) XML value is kept, only flagged

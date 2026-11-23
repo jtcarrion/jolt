@@ -381,8 +381,22 @@ def output_frame_transform(
         source = "assumed exact binning (Warp XML has no ImageDimensionsAngstrom/DimensionsAngstrom)"
     else:
         image_phys = np.asarray(warp_image_dims_angstrom, dtype=float)
-        volume_phys = np.asarray(warp_volume_dims_angstrom, dtype=float)
+        volume_phys = np.array(warp_volume_dims_angstrom, dtype=float)
         source = "Warp XML ImageDimensionsAngstrom and DimensionsAngstrom"
+        # WarpTools leaves DimensionsAngstrom Z at a placeholder (e.g. 1 A) until a later step (such as M) writes the
+        # real thickness; the Warp z center would then be ~0 instead of ~NZ/2. Use the tomogram thickness instead.
+        xml_z = float(volume_phys[2])
+        known_z = nz * p
+        if xml_z < 2.0 * p:
+            volume_phys[2] = known_z
+            source += (
+                f"; XML thickness {xml_z:g} A is a placeholder: used tomo_dims_xyz Z instead ({nz} x {p:g} A)"
+            )
+        elif abs(xml_z - known_z) > 2.0 * p:
+            source += (
+                f"; WARNING: XML thickness {xml_z:g} A differs from tomo_dims_xyz Z ({nz} x {p:g} = {known_z:g} A) "
+                "by more than 2 voxels - check that the tomograms and the XMLs belong together"
+            )
     if warp_image_dims_angstrom is None or warp_volume_dims_angstrom is None:
         scale_img = np.ones(2)
     else:
