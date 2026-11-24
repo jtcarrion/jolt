@@ -92,13 +92,34 @@ def output_frame_for(
     xf: str | PathLike,
     tlt: str | PathLike,
     xml: str | PathLike | None,
+    warp_settings=None,
 ) -> geometry.OutputFrame:
-    """Output frame of one tilt series: Warp dimensions from its XML, image rotation from its ``.xf``."""
-    image_dims = volume_dims = None
-    if frame == "warp" and xml:
-        from jolt.io.warp import physical_dimensions
+    """Output frame of one tilt series.
 
-        image_dims, volume_dims = physical_dimensions(xml)
+    For ``warp``: the volume center from the WarpTools settings (``warp_settings``, a
+    :class:`jolt.io.warp.WarpSettings`; required, since Warp itself takes the tomogram size from there and the XML's
+    ``DimensionsAngstrom`` is only a cache), the image scale from the XML's ``ImageDimensionsAngstrom``, and the
+    image rotation from the ``.xf``.
+
+    Raises
+    ------
+    ValueError
+        For ``warp`` without ``warp_settings``.
+    """
+    image_dims = volume_dims = None
+    volume_detail = None
+    if frame == "warp":
+        if warp_settings is None:
+            raise ValueError("the warp output frame needs the WarpTools settings (Tomo dimensions and pixel size)")
+        if xml:
+            from jolt.io.warp import physical_dimensions
+
+            image_dims, _ = physical_dimensions(xml)
+        volume_dims = warp_settings.volume_angstrom
+        volume_detail = (
+            f"WarpTools settings {Path(warp_settings.path).name} (Tomo.Dimensions {tuple(warp_settings.tomo_dims_xyz)} "
+            f"x PixelSize {warp_settings.pixel_size:g} A)"
+        )
     rows = read_xf(xf, [float(t) for t in read_tlt(tlt)])
     rotation = float(np.rad2deg(np.mean([np.arctan2(r["A21"], r["A11"]) for r in rows]))) if rows else 0.0
     return geometry.output_frame_transform(
@@ -108,6 +129,8 @@ def output_frame_for(
         warp_image_dims_angstrom=image_dims,
         warp_volume_dims_angstrom=volume_dims,
         image_rotation_deg=rotation,
+        volume_source="settings",
+        volume_detail=volume_detail,
     )
 
 

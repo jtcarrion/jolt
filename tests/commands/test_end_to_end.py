@@ -10,7 +10,7 @@ import pandas as pd
 import starfile
 from scipy.spatial import cKDTree
 
-from tests.synthetic import synthetic_picks
+from tests.synthetic import synthetic_picks, write_warp_settings
 
 TOMO_XYZ = (256, 256, 60)
 
@@ -40,6 +40,8 @@ def make_project(root):
         axis_offset_y=np.zeros(n),
     )
     warpxmlfile.write(xml, root / "warp_tiltseries" / "TS_1.xml")
+    # the tomograms are exactly the tilt-stack size at 10 A/px, so the warp frame is exact binning
+    write_warp_settings(root / "warp_tiltseries.settings", 10.0, TOMO_XYZ)
     return pts
 
 

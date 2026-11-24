@@ -47,8 +47,14 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         choices=["warp", "teamtomo"],
         default="warp",
         help="coordinate frame of --labels_3d: warp (WarpTools tomograms, e.g. particles picked or refined on Warp "
-        "reconstructions; sub-voxel centers from each tilt series' Warp XML) or teamtomo (TeamTomo, IMOD clip rotx "
-        "and CZI portal tomograms). Same meaning as joint_optimize --output_frame",
+        "reconstructions; sub-voxel centers from the WarpTools settings and each tilt series' Warp XML) or teamtomo "
+        "(TeamTomo, IMOD clip rotx and CZI portal tomograms). Same meaning as joint_optimize --output_frame",
+    )
+    labels.add_argument(
+        "--warp_settings",
+        default=None,
+        help="WarpTools .settings file of the tomograms the --labels_3d come from; needed by --labels_frame warp. "
+        "Default: as joint_optimize --warp_settings",
     )
 
     training = parser.add_argument_group("Training")
@@ -235,8 +241,22 @@ def main(args: argparse.Namespace) -> None:
     final_model = topaz.checkpoint_path(out / "train" / "models", args.epochs, args.epochs)
     if final_model.exists() and not args.overwrite and not args.dry_run:
         raise SystemExit(f"{final_model} exists; use --overwrite to retrain")
+    warp_settings, settings_notes = None, []
+    if args.labels_3d and args.labels_frame == "warp":
+        from jolt.io import warp as warp_io
+
+        try:
+            warp_settings, how, new = warp_io.resolve_project_settings(cfg["project"], args.warp_settings)
+        except ValueError as exc:
+            raise SystemExit(f"finetune --labels_frame warp: {exc}") from None
+        settings_notes.append(f"Warp settings: {how}")
+        if new:
+            cfg["project"]["warp_settings"] = warp_io.settings_record(warp_settings)
+            settings_notes.append("Warp settings recorded in jolt.yaml")
     out.mkdir(parents=True, exist_ok=True)
     log = FileLog(out / "finetune.log")
+    for note in settings_notes:
+        log(note)
     tomo_dims = tuple(cfg["project"]["tomo_dims_xyz"])
     tables = _label_tables(args.labels_3d or args.labels_2d, names)
     missing_heldout = sorted(heldout - set(tables))
@@ -251,11 +271,17 @@ def main(args: argparse.Namespace) -> None:
         entry = series[name]
         if args.labels_3d:
             frame = output_frame_for(
-                args.labels_frame, tomo_dims, entry["pixel_size"], entry["xf"], entry["tlt"], entry.get("xml")
+                args.labels_frame,
+                tomo_dims,
+                entry["pixel_size"],
+                entry["xf"],
+                entry["tlt"],
+                entry.get("xml"),
+                warp_settings=warp_settings,
             )
             labels[name] = labels_from_3d(tables[name], entry, tomo_dims, frame)
-            if "exact binning" in frame.source and args.labels_frame == "warp":
-                log(f"[{name}] WARNING: Warp XML has no physical dimensions; warp labels assume exact binning")
+            if "image: assumed exact binning" in frame.source and args.labels_frame == "warp":
+                log(f"[{name}] WARNING: Warp XML has no ImageDimensionsAngstrom; warp labels assume exact binning")
         else:
             labels[name] = labels_from_2d(tables[name], int(entry["n_tilts"]))
         rows = [

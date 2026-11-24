@@ -6,6 +6,14 @@ JOLT reads a WarpTools project (``jolt import --warp_dir``) whose tilt series ar
 ``ts_import_alignments``). It refines the per-tilt shifts, not the tilt axis or the tilt angles, and writes
 everything Warp needs to use that refined alignment and the particles.
 
+Particles are written in the frame of Warp's tomograms (``--output_frame warp``, the default), which needs the
+WarpTools settings file of those tomograms: its ``Tomo`` dimensions and pixel size set the tomogram center.
+``jolt import`` records it, using ``--warp_settings <file>.settings`` or else the tilt-series settings in
+``--warp_dir`` (``Import.Extension`` ``*.tomostar``; ``warp_frameseries.settings`` is skipped) if there is exactly
+one, or several that agree on these values. Pass the same settings file you use for
+``ts_reconstruct`` and ``ts_export_particles``. A project imported without it can pass ``--warp_settings`` to
+``joint_optimize``, which records it.
+
 1. Import the refined alignment
 -------------------------------
 

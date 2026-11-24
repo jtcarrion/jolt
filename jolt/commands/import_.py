@@ -58,6 +58,14 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         help="directory with one sub-directory per tilt series holding .st, .xf and .tlt "
         "(default: <warp_dir>/warp_tiltseries/tiltstack)",
     )
+    paths.add_argument(
+        "--warp_settings",
+        default=None,
+        help="WarpTools .settings file used for ts_reconstruct and ts_export_particles; its Tomo dimensions and "
+        "pixel size set the tomogram center of the warp output frame (default: the tilt-series *.settings in "
+        "--warp_dir, Import.Extension *.tomostar, if there is one or several that agree; frame-series settings are "
+        "skipped)",
+    )
 
     picks = parser.add_argument_group("Existing 2D picks (skip jolt detect_2d)")
     picks.add_argument(
@@ -173,8 +181,32 @@ def main(args: argparse.Namespace) -> None:
         for warning in ts.warnings:
             print(f"WARNING: {warning}")
         entries[ts.name] = entry
+    settings, settings_warnings = None, []
+    if args.warp_settings:
+        try:
+            settings = warp.read_settings(args.warp_settings)
+            settings_how = f"{settings.path} (--warp_settings)"
+        except ValueError as exc:
+            problems.append(str(exc))
+    else:
+        settings, settings_how = warp.find_settings(warp_dir)
+        if settings is None:
+            settings_warnings.append(
+                f"no WarpTools settings recorded ({settings_how}). joint_optimize --output_frame warp (the default) "
+                "needs them: re-run jolt import with --warp_settings <file>.settings, or pass --warp_settings to "
+                "joint_optimize"
+            )
+    if settings is not None:
+        for size in sorted({float(e["pixel_size"]) for e in entries.values()}):
+            mismatch = warp.settings_volume_check(settings, (tomo_x, tomo_y, tomo_z), size)
+            if mismatch:
+                settings_warnings.append(mismatch)
     if problems:
         raise SystemExit(f"{len(problems)} problem(s) found; nothing was written:\n  " + "\n  ".join(problems))
+    if settings is not None:
+        print(f"Warp settings: {settings_how}")
+    for warning in settings_warnings:
+        print(f"WARNING: {warning}")
 
     if pending_beads:
         import pandas as pd
@@ -212,6 +244,8 @@ def main(args: argparse.Namespace) -> None:
         },
         "tilt_series": entries,
     }
+    if settings is not None:
+        cfg["project"]["warp_settings"] = warp.settings_record(settings)
     config.record_command(cfg, "import", {k: v for k, v in vars(args).items() if k != "func"})
     path = config.save(project_dir, cfg)
     n_picks = sum(1 for e in entries.values() if "picks_2d" in e)

@@ -185,3 +185,20 @@ def exclusive_match_score(candidates, truth_xyz, truth_species, radius_by_specie
         tp = int((cost[rows, cols] < 1e9).sum())
     fp, fn = len(cand) - tp, len(truth) - tp
     return tp, fp, fn, tp / len(truth), tp / len(cand)
+
+
+def write_warp_settings(path, pixel_size, tomo_dims_xyz, extension="*.tomostar"):
+    """Write a minimal WarpTools ``.settings`` file with ``Import.PixelSize`` and ``Tomo.DimensionsX/Y/Z``.
+
+    Real files hold many more parameters (and a UTF-8 byte-order mark); JOLT reads only these and
+    ``Import.Extension`` (``*.tomostar`` for tilt-series settings).
+    """
+    x, y, z = tomo_dims_xyz
+    path.write_text(
+        '﻿<?xml version="1.0" encoding="utf-8"?>\n<Settings>\n'
+        f'\t<Import>\n\t\t<Param Name="Extension" Value="{extension}" />\n'
+        f'\t\t<Param Name="PixelSize" Value="{pixel_size}" />\n\t</Import>\n'
+        f'\t<Tomo>\n\t\t<Param Name="DimensionsX" Value="{x}" />\n\t\t<Param Name="DimensionsY" Value="{y}" />\n'
+        f'\t\t<Param Name="DimensionsZ" Value="{z}" />\n\t</Tomo>\n</Settings>\n',
+        encoding="utf-8",
+    )

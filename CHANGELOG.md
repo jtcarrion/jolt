@@ -30,6 +30,19 @@ Entries marked **changes the output** alter the particles or the alignment JOLT 
   data.
 
 ### Fixed
+- `--output_frame warp` (and `finetune --labels_frame warp`) took the tomogram size from each tilt series' Warp XML
+  (`DimensionsAngstrom`). That value is only a cache: `ts_import_alignments` stores a placeholder thickness of 1 A
+  until `ts_ctf` writes the real one, and with it every particle was off in z by about half the tomogram thickness
+  (seen on EMPIAR-13391 and on bmp6 XMLs written by `ts_import_alignments`). The tomogram size now comes from the
+  WarpTools settings file, `Tomo.DimensionsX/Y/Z` x `Import.PixelSize`, which is what `ts_reconstruct` and
+  `ts_export_particles` use. New `jolt import --warp_settings` records it in `jolt.yaml`; by default `import` takes
+  the tilt-series `*.settings` in `--warp_dir` (`Import.Extension *.tomostar`; `warp_frameseries.settings` is
+  skipped) if there is exactly one, or several that agree on these values.
+  `joint_optimize` and `finetune` take `--warp_settings` too (recorded in `jolt.yaml`), for projects imported
+  before this change; without settings they search the Warp folder the same way, and refuse the `warp` frame if
+  none can be chosen. `run_status.json` records where the center came from (`output_frame.volume_source`). XML
+  dimensions that are all zero are treated as missing. **Changes the output** in the `warp` frame for XMLs with a
+  placeholder or stale tomogram size; where the XML already held the real size, the output is unchanged.
 - `joint_optimize --iter N` (N > 1) with picks registered with `--picks_frame aligned` applied the first pass's
   shift correction again in every later pass, because aligned picks were not moved into the frame of the refined
   alignment. On a synthetic series (85 deg tilt axis, 5.2 px injected per-tilt error) 3 passes left 6.6 px of error,
