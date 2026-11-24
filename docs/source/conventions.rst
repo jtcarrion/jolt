@@ -100,17 +100,28 @@ in its own frame and writes particle coordinates in the frame of the tomograms y
     The frame of WarpTools ``ts_reconstruct`` tomograms, which is what ``ts_export_particles`` reads. Warp projects
     a volume point with ``u = cos(theta) x - sin(theta) z`` while IMOD, TeamTomo and JOLT use ``+ sin(theta) z``,
     so Warp tomograms are mirrored in Z (``WarpLib/TiltSeries/TiltSeries.cs``, ``GetPositionInAllTilts``). Warp
-    also centers the volume at ``DimensionsAngstrom / 2`` and maps its physical image frame onto the binned
-    images with ``SizeRoundingFactors``. With ``D`` the XML ``DimensionsAngstrom``, ``p`` the pixel size and
-    ``s`` Warp's size-rounding factors (binned size / (``ImageDimensionsAngstrom`` / ``p``)), each particle at
-    ``(x, y, z)`` in JOLT's frame is written as
+    also centers the volume at half its tomogram size and maps its physical image frame onto the binned images
+    with ``SizeRoundingFactors``. With ``D`` the tomogram size Warp uses, ``p`` the pixel size and ``s`` Warp's
+    size-rounding factors (binned size / (``ImageDimensionsAngstrom`` / ``p``)), each particle at ``(x, y, z)`` in
+    JOLT's frame is written as
 
     ``X = D_x/2p + (x - N_x/2) / s_x``,  ``Y = D_y/2p + (y - N_y/2) / s_y``,
     ``Z = D_z/2p - (z - (N_z - 1)/2) / s_x``
 
-    (the two image scales are rotated into volume axes by the ``.xf`` in-plane rotation). Both dimensions are read
-    from each tilt series' Warp XML. If the XML does not have them, exact binning is assumed (``X = x``, ``Y = y``,
-    ``Z = N_z - 0.5 - z``) and a warning is logged. Measured on EMPIAR-10499 (5 tilt series, 50 IMOD-tracked gold
+    (the two image scales are rotated into volume axes by the ``.xf`` in-plane rotation).
+
+    ``D`` comes from the **WarpTools settings file** (``Tomo.DimensionsX/Y/Z`` x ``Import.PixelSize``), which is
+    what ``ts_reconstruct`` and ``ts_export_particles`` use. The XML's ``DimensionsAngstrom`` is only a cache:
+    ``ts_import_alignments`` writes a placeholder thickness of 1 A there, and ``ts_ctf`` the real value. Using it
+    put every particle about half a tomogram thickness off in z. ``jolt import`` records the settings
+    (``--warp_settings``; by default the tilt-series ``*.settings`` in ``--warp_dir`` if there is one, or several
+    that agree on these values; frame-series settings are skipped), and ``joint_optimize`` refuses the ``warp`` frame without them. The settings also differ from
+    ``--tomo_dims_xyz`` by sub-voxel rounding (bmp6: 2800 x 1.368 A = 383.04 voxels at 10 A, against a 384-voxel
+    tomogram), which is why they are used rather than ``--tomo_dims_xyz``.
+
+    ``ImageDimensionsAngstrom`` is read from each tilt series' Warp XML: Warp rewrites it from the tilt images
+    before every reconstruction or export, so it is reliable. If the XML does not have it (or it is zero), the image
+    scale assumes exact binning and a warning is logged. Measured on EMPIAR-10499 (5 tilt series, 50 IMOD-tracked gold
     beads, 652 x 630 x 340 voxels at 10 A, where the transform is ``(x + 0.33, y + 0.44, 339.55 - z)`` at the
     center and 0.1 % larger toward the edges): written positions agree with the beads in the Warp tomograms to a
     mean of 0.05 voxel per axis (rms 0.28 voxel). Use the STAR directly with ``WarpTools ts_export_particles

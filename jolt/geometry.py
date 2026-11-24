@@ -30,9 +30,11 @@ sub-voxel center conventions. Particle coordinates are written in one of two out
 
 ``warp``
     The frame of WarpTools ``ts_reconstruct`` tomograms, which is what ``ts_export_particles`` reads. Warp projects
-    with ``u = cos(theta) x - sin(theta) z`` (opposite depth sign), centers the volume at
-    ``volume_dimensions_angstrom / 2`` and maps its physical image frame onto the binned images with
-    ``SizeRoundingFactors``. Measured on EMPIAR-10499 gold beads (5 series, 50 beads) to about 0.1 voxel.
+    with ``u = cos(theta) x - sin(theta) z`` (opposite depth sign), centers the volume at half the tomogram size of
+    its settings (``Tomo.Dimensions * Import.PixelSize``; the XML's ``DimensionsAngstrom`` is only a cache, 1 A
+    thick after ``ts_import_alignments``) and maps its physical image frame (XML ``ImageDimensionsAngstrom``) onto
+    the binned images with ``SizeRoundingFactors``. Measured on EMPIAR-10499 gold beads (5 series, 50 beads) to
+    about 0.1 voxel.
 ``teamtomo``
     The frame of TeamTomo ``torch-reconstruct-tomogram``: JOLT's frame with the volume center at ``N//2`` in z,
     i.e. ``z + 0.5`` when ``NZ`` is even.
@@ -287,6 +289,7 @@ def project_star_points_to_raw(
 
 
 OUTPUT_FRAMES = ("warp", "teamtomo")
+VOLUME_SOURCES = ("settings", "xml", "tomo_dims")
 
 
 @dataclass(frozen=True)
@@ -303,6 +306,9 @@ class OutputFrame:
     matrix_xy: tuple[tuple[float, float], tuple[float, float]]
     z_factor: float
     source: str
+    #: Where the volume center came from: ``settings`` (WarpTools settings, what Warp itself uses), ``xml`` (the
+    #: tilt-series XML cache), ``tomo_dims`` (``--tomo_dims_xyz``), ``exact_binning`` or ``none`` (teamtomo).
+    volume_source: str = "none"
 
     def to_frame(self, points_xyz: np.ndarray) -> np.ndarray:
         """Convert ``(N, 3)`` points from JOLT's frame to this output frame."""
@@ -331,6 +337,7 @@ class OutputFrame:
             "matrix_xy": [[float(v) for v in row] for row in self.matrix_xy],
             "z_factor": float(self.z_factor),
             "source": self.source,
+            "volume_source": self.volume_source,
         }
 
 
@@ -342,6 +349,8 @@ def output_frame_transform(
     warp_image_dims_angstrom: tuple[float, float] | None = None,
     warp_volume_dims_angstrom: tuple[float, float, float] | None = None,
     image_rotation_deg: float = 0.0,
+    volume_source: str = "xml",
+    volume_detail: str | None = None,
 ) -> OutputFrame:
     """Transform from JOLT's 3D frame to the ``warp`` or ``teamtomo`` output frame.
 
@@ -352,11 +361,19 @@ def output_frame_transform(
         Tomogram dimensions in voxels at the tilt-stack pixel size (X, Y = aligned image size).
     pixel_size : float
         Tilt-stack (and tomogram) pixel size in Angstrom.
-    warp_image_dims_angstrom, warp_volume_dims_angstrom : tuple of float, optional
-        ``ImageDimensionsAngstrom`` and ``DimensionsAngstrom`` from the tilt series' Warp XML. Without them the
-        ``warp`` frame assumes exact binning (no sub-voxel offsets or scale) and says so in ``source``.
+    warp_image_dims_angstrom : tuple of float, optional
+        ``ImageDimensionsAngstrom`` from the tilt series' Warp XML (the raw image size, which sets Warp's
+        ``SizeRoundingFactors``). Without it the image scale assumes exact binning.
+    warp_volume_dims_angstrom : tuple of float, optional
+        The tomogram size Warp uses, in Angstrom: ``Tomo.Dimensions * Import.PixelSize`` from the WarpTools settings
+        (:func:`jolt.io.warp.read_settings`). It sets the volume center. Without it the volume assumes exact binning.
     image_rotation_deg : float
         In-plane rotation of the ``.xf`` (raw to aligned); turns Warp's raw-image scale into volume axes.
+    volume_source : {"settings", "xml", "tomo_dims"}
+        Where ``warp_volume_dims_angstrom`` came from, recorded as ``OutputFrame.volume_source`` (``exact_binning``
+        when it is not given).
+    volume_detail : str, optional
+        Human-readable description of that source for ``OutputFrame.source`` (e.g. the settings file name).
 
     Returns
     -------
@@ -375,21 +392,26 @@ def output_frame_transform(
         )
     if frame != "warp":
         raise ValueError(f"unknown output frame {frame!r}; expected one of {OUTPUT_FRAMES}")
-    if warp_image_dims_angstrom is None or warp_volume_dims_angstrom is None:
-        image_phys = np.array([nx, ny], dtype=float) * p
+    if volume_source not in VOLUME_SOURCES:
+        raise ValueError(f"unknown volume_source {volume_source!r}; expected one of {VOLUME_SOURCES}")
+    if warp_volume_dims_angstrom is None:
         volume_phys = np.array([nx, ny, nz], dtype=float) * p
-        source = "assumed exact binning (Warp XML has no ImageDimensionsAngstrom/DimensionsAngstrom)"
+        volume_source = "exact_binning"
+        volume_text = "volume: assumed exact binning (no Warp volume dimensions)"
     else:
-        image_phys = np.asarray(warp_image_dims_angstrom, dtype=float)
         volume_phys = np.asarray(warp_volume_dims_angstrom, dtype=float)
-        source = "Warp XML ImageDimensionsAngstrom and DimensionsAngstrom"
-    if warp_image_dims_angstrom is None or warp_volume_dims_angstrom is None:
+        volume_text = f"volume: {volume_detail or volume_source}"
+    if warp_image_dims_angstrom is None:
         scale_img = np.ones(2)
+        image_text = "image: assumed exact binning (Warp XML has no ImageDimensionsAngstrom)"
     else:
         # Warp's binned image size and SizeRoundingFactors (TiltSeries.LoadMovieData; C# Math.Round, like np.round,
         # rounds halves to even).
+        image_phys = np.asarray(warp_image_dims_angstrom, dtype=float)
         binned = np.round(image_phys / p / 2.0) * 2.0
         scale_img = (image_phys / p) / binned  # = 1 / SizeRoundingFactors, per raw-image axis
+        image_text = "image: Warp XML ImageDimensionsAngstrom"
+    source = f"{volume_text}; {image_text}"
     a = np.deg2rad(float(image_rotation_deg))
     rot = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
     m = rot @ np.diag(scale_img) @ rot.T
@@ -400,4 +422,5 @@ def output_frame_transform(
         matrix_xy=((float(m[0, 0]), float(m[0, 1])), (float(m[1, 0]), float(m[1, 1]))),
         z_factor=-float(m[0, 0]),
         source=source,
+        volume_source=volume_source,
     )

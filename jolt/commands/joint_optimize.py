@@ -121,10 +121,17 @@ def add_args(parser: argparse.ArgumentParser | None = None) -> argparse.Argument
         choices=["warp", "teamtomo"],
         default="warp",
         help="coordinate frame of the particle STAR and .mod files. warp: the frame of WarpTools ts_reconstruct "
-        "tomograms, read by ts_export_particles (use --coords_angpix <pixel size>); exact sub-voxel centers are "
-        "taken from each tilt series' Warp XML. teamtomo: the frame of TeamTomo torch-reconstruct-tomogram, which "
-        "also matches IMOD reconstructions rotated with clip rotx / trimvol -rx and the CZI portal tomograms "
-        "(mirrored in Z relative to warp)",
+        "tomograms, read by ts_export_particles (use --coords_angpix <pixel size>); exact sub-voxel centers come "
+        "from the WarpTools settings (tomogram size, see --warp_settings) and each tilt series' Warp XML (image "
+        "size). teamtomo: the frame of TeamTomo torch-reconstruct-tomogram, which also matches IMOD reconstructions "
+        "rotated with clip rotx / trimvol -rx and the CZI portal tomograms (mirrored in Z relative to warp)",
+    )
+    output.add_argument(
+        "--warp_settings",
+        default=None,
+        help="WarpTools .settings file of the tomograms (the one passed to ts_reconstruct and ts_export_particles); "
+        "needed by --output_frame warp. Default: the one recorded by jolt import, else the tilt-series *.settings in "
+        "the Warp project folder if there is one (or several that agree). A file given here is recorded in jolt.yaml",
     )
 
     execution = parser.add_argument_group("Execution")
@@ -247,6 +254,22 @@ def main(args: argparse.Namespace) -> None:
         fom_search_radius=args.fom_search_radius,
     )
     x, y, z = cfg["project"]["tomo_dims_xyz"]
+    warp_settings, settings_notes = None, []
+    if args.output_frame == "warp":
+        from jolt.io import warp as warp_io
+
+        try:
+            warp_settings, how, new = warp_io.resolve_project_settings(cfg["project"], args.warp_settings)
+        except ValueError as exc:
+            raise SystemExit(f"joint_optimize: {exc}") from None
+        settings_notes.append(f"Warp settings: {how}")
+        for size in sorted({float(series[n]["pixel_size"]) for n in names}):
+            mismatch = warp_io.settings_volume_check(warp_settings, (x, y, z), size)
+            if mismatch:
+                settings_notes.append(f"WARNING: {mismatch}")
+        if new:
+            cfg["project"]["warp_settings"] = warp_io.settings_record(warp_settings)
+            settings_notes.append("Warp settings recorded in jolt.yaml")
     tasks, deselection_warnings = [], []
     for name in names:
         entry = series[name]
@@ -265,7 +288,13 @@ def main(args: argparse.Namespace) -> None:
             if args.fiducials == "anchor" and entry.get("fiducials_2d")
             else None,
             output_frame=pipeline.output_frame_for(
-                args.output_frame, (x, y, z), entry["pixel_size"], entry["xf"], entry["tlt"], entry.get("xml")
+                args.output_frame,
+                (x, y, z),
+                entry["pixel_size"],
+                entry["xf"],
+                entry["tlt"],
+                entry.get("xml"),
+                warp_settings=warp_settings,
             ),
             deselected_tilts=deselected,
             warp_in_use_tilts=in_use,
@@ -277,14 +306,16 @@ def main(args: argparse.Namespace) -> None:
     gpus = batch.visible_gpus(args.gpus)
     where = "GPUs " + ", ".join(gpus) if gpus else "CPU"
     log(f"joint_optimize: {len(tasks)} tilt series on {where} ({args.n_jobs or 'auto'} jobs)")
-    no_dims = [t.args[0].name for t in tasks if "exact binning" in t.args[0].output_frame.source]
+    no_dims = [t.args[0].name for t in tasks if "image: assumed exact binning" in t.args[0].output_frame.source]
     for warning in deselection_warnings:
         log(warning)
     log(f"output frame: {args.output_frame}")
+    for note in settings_notes:
+        log(note)
     if args.output_frame == "warp" and no_dims:
         log(
-            f"WARNING: {len(no_dims)} tilt series have no ImageDimensionsAngstrom/DimensionsAngstrom in their Warp "
-            f"XML ({no_dims[:5]}); their warp-frame coordinates assume exact binning (no sub-voxel offsets)"
+            f"WARNING: {len(no_dims)} tilt series have no ImageDimensionsAngstrom in their Warp XML ({no_dims[:5]}); "
+            "their warp-frame x, y assume exact binning (no sub-voxel image scale)"
         )
     outcomes = batch.run_tasks(tasks, gpus, args.n_jobs, args.worker_threads, log=log)
 
@@ -307,9 +338,11 @@ def main(args: argparse.Namespace) -> None:
     with_xf = [n for n in summary if (out_root / n / f"{n}.xf").is_file()]
     if with_xf:
         sizes = sorted({float(series[n]["pixel_size"]) for n in with_xf})
+        settings_hint = warp_settings.path if warp_settings else "<warp_tiltseries.settings>"
         log(
             f"refined alignments for {len(with_xf)} of {len(summary)} tilt series; to use them in Warp: "
-            f"WarpTools ts_import_alignments --settings <warp_tiltseries.settings> --alignments {out_root.resolve()} "
+            f"WarpTools ts_import_alignments --settings {settings_hint} "
+            f"--alignments {out_root.resolve()} "
             f"--alignment_angpix {' or '.join(f'{v:g}' for v in sizes)} (then rerun ts_ctf before ts_reconstruct)"
         )
     n_particles = sum(s.get("n_particles", 0) for s in summary.values())

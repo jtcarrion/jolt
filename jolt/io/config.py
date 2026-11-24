@@ -12,6 +12,10 @@ Layout::
       xml_path: /path/to/warp_project/warp_tiltseries
       tiltstack_path: /path/to/warp_project/warp_tiltseries/tiltstack
       tomo_dims_xyz: [630, 630, 200]          # pixels at the tilt-stack pixel size
+      warp_settings:                          # optional; needed by the warp output frame
+        path: /path/to/warp_project/warp_tiltseries.settings
+        pixel_size: 1.7005                    # Import.PixelSize (A)
+        tomo_dims_xyz: [3838, 3710, 2000]     # Tomo.DimensionsX/Y/Z (pixels at pixel_size)
     tilt_series:
       TS_5:
         xml: ...
@@ -63,6 +67,22 @@ def validate(config: dict, source: str = CONFIG_NAME) -> None:
     dims = project.get("tomo_dims_xyz")
     if not (isinstance(dims, list) and len(dims) == 3 and all(isinstance(d, int) and d > 0 for d in dims)):
         problems.append(f"project.tomo_dims_xyz must be three positive integers, got {dims!r}")
+    settings = project.get("warp_settings")
+    if settings is not None:
+        record = settings if isinstance(settings, dict) else {}
+        sdims, size = record.get("tomo_dims_xyz"), record.get("pixel_size")
+        if not (
+            isinstance(record.get("path"), str)
+            and isinstance(size, (int, float))
+            and size > 0
+            and isinstance(sdims, list)
+            and len(sdims) == 3
+            and all(isinstance(d, int) and d > 0 for d in sdims)
+        ):
+            problems.append(
+                "project.warp_settings must have a path, a positive pixel_size and three positive tomo_dims_xyz, "
+                f"got {settings!r}"
+            )
     series = config.get("tilt_series")
     if not isinstance(series, dict) or not series:
         problems.append("tilt_series is empty")

@@ -243,8 +243,14 @@ def discover(
 def physical_dimensions(xml: str | PathLike) -> tuple[tuple[float, float] | None, tuple[float, float, float] | None]:
     """``ImageDimensionsAngstrom`` and ``DimensionsAngstrom`` of a Warp tilt-series XML (``None`` if absent).
 
-    They define Warp's image and volume centers and its ``SizeRoundingFactors``, which the ``warp`` output frame
-    needs (:func:`jolt.geometry.output_frame_transform`).
+    The image dimensions set Warp's image center and its ``SizeRoundingFactors``, which the ``warp`` output frame
+    needs (:func:`jolt.geometry.output_frame_transform`). Warp rewrites them from the first tilt's average before
+    every reconstruction or export (``TiltSeries.LoadMovieData``), so the stored value is the real image size.
+
+    The volume dimensions are only a cache: Warp overwrites them from the settings before every use, and
+    ``ts_import_alignments`` stores a placeholder thickness of 1 A. Use :func:`read_settings` for the volume.
+
+    A value that is all zeros (an XML written before Warp processed the tilt series) is returned as ``None``.
     """
     import warpxmlfile
 
@@ -253,4 +259,194 @@ def physical_dimensions(xml: str | PathLike) -> tuple[tuple[float, float] | None
     volume = getattr(ts, "volume_dimensions_angstrom", None)
     image = tuple(float(v) for v in image) if image is not None else None
     volume = tuple(float(v) for v in volume) if volume is not None else None
+    if image is not None and not any(image):
+        image = None
+    if volume is not None and not any(volume):
+        volume = None
     return image, volume
+
+
+@dataclass
+class WarpSettings:
+    """The values JOLT needs from a WarpTools ``.settings`` file.
+
+    Attributes
+    ----------
+    path : Path
+        The settings file.
+    pixel_size : float
+        ``Import.PixelSize`` (Angstrom), the pixel size Warp multiplies the tomogram dimensions by.
+    tomo_dims_xyz : tuple of int
+        ``Tomo.DimensionsX/Y/Z`` (pixels at ``pixel_size``).
+    extension : str or None
+        ``Import.Extension``: ``*.tomostar`` for tilt-series settings; frame-series settings name the movie files.
+    """
+
+    path: Path
+    pixel_size: float
+    tomo_dims_xyz: tuple[int, int, int]
+    extension: str | None = None
+
+    @property
+    def is_tilt_series(self) -> bool:
+        """Whether these are tilt-series settings (``Import.Extension`` ``*.tomostar``, or not given)."""
+        return self.extension is None or self.extension.strip().lower().endswith(".tomostar")
+
+    @property
+    def volume_angstrom(self) -> tuple[float, float, float]:
+        """Tomogram size in Angstrom, as Warp computes it (``ProcessingOptions.DimensionsPhysical``)."""
+        return tuple(float(d) * self.pixel_size for d in self.tomo_dims_xyz)
+
+
+def read_settings(path: str | PathLike, require_tilt_series: bool = True) -> WarpSettings:
+    """Read ``Import.PixelSize`` and ``Tomo.DimensionsX/Y/Z`` from a WarpTools ``.settings`` file.
+
+    WarpTools uses these, not the tilt-series XML, for the tomogram size in ``ts_reconstruct`` and
+    ``ts_export_particles`` (``TomoProcessingOptionsBase.DimensionsPhysical = Dimensions * PixelSize``).
+
+    A WarpTools project usually also has frame-series settings (``warp_frameseries.settings``, ``Import.Extension``
+    the movie files), whose ``Tomo`` dimensions are unused defaults; with ``require_tilt_series`` they are refused.
+
+    Raises
+    ------
+    ValueError
+        If the file cannot be read as a WarpTools settings file, a value is missing or not positive, or (with
+        ``require_tilt_series``) it holds frame-series settings.
+    """
+    import xml.etree.ElementTree as ET
+
+    path = Path(path)
+    try:
+        root = ET.parse(path).getroot()
+    except (ET.ParseError, OSError) as exc:
+        raise ValueError(f"{path}: cannot read it as a WarpTools settings file ({exc})") from exc
+
+    def param(section: str, name: str) -> float:
+        node = root.find(f"./{section}/Param[@Name='{name}']")
+        if node is None or node.get("Value") is None:
+            raise ValueError(f"{path}: no {section}.{name}; is this a WarpTools settings file?")
+        try:
+            value = float(node.get("Value"))
+        except ValueError as exc:
+            raise ValueError(f"{path}: {section}.{name} is not a number: {node.get('Value')!r}") from exc
+        if not value > 0:
+            raise ValueError(f"{path}: {section}.{name} must be positive, got {value:g}")
+        return value
+
+    dims = tuple(param("Tomo", f"Dimensions{axis}") for axis in "XYZ")
+    if any(d != int(d) for d in dims):
+        raise ValueError(f"{path}: Tomo.DimensionsX/Y/Z must be whole pixels, got {dims}")
+    ext_node = root.find("./Import/Param[@Name='Extension']")
+    settings = WarpSettings(
+        path=path,
+        pixel_size=param("Import", "PixelSize"),
+        tomo_dims_xyz=tuple(int(d) for d in dims),
+        extension=ext_node.get("Value") if ext_node is not None else None,
+    )
+    if require_tilt_series and not settings.is_tilt_series:
+        raise ValueError(
+            f"{path}: these are frame-series settings (Import.Extension {settings.extension}); pass the tilt-series "
+            "settings (Import.Extension *.tomostar) used for ts_reconstruct and ts_export_particles"
+        )
+    return settings
+
+
+def find_settings(warp_dir: str | PathLike) -> tuple[WarpSettings | None, str]:
+    """Find the WarpTools settings of a project; returns ``(settings or None, explanation)``.
+
+    Looks for tilt-series ``*.settings`` directly in ``warp_dir`` (frame-series settings such as
+    ``warp_frameseries.settings`` are skipped, see :func:`read_settings`). One file is used as is. Several files are
+    accepted only if they all agree on ``Import.PixelSize`` and ``Tomo.DimensionsX/Y/Z`` (the values JOLT uses); then
+    ``warp_tiltseries.settings`` is used if present, otherwise the first by name. ``None`` is returned when there
+    is no tilt-series settings file, when they disagree, or when one cannot be read; the explanation says which.
+    """
+    candidates = sorted(Path(warp_dir).glob("*.settings"))
+    found, skipped, problems = [], [], []
+    for path in candidates:
+        try:
+            s = read_settings(path, require_tilt_series=False)
+        except ValueError as exc:
+            problems.append(str(exc))
+            continue
+        (found if s.is_tilt_series else skipped).append(s)
+    if problems:
+        return None, "cannot read every settings file:\n  " + "\n  ".join(problems)
+    note = f"; skipped frame-series {', '.join(s.path.name for s in skipped)}" if skipped else ""
+    if not found:
+        return None, f"no tilt-series *.settings file in {warp_dir}{note}"
+    if len({(s.pixel_size, s.tomo_dims_xyz) for s in found}) > 1:
+        listed = "\n  ".join(f"{s.path.name}: PixelSize {s.pixel_size:g}, Dimensions {s.tomo_dims_xyz}" for s in found)
+        return None, f"{len(found)} tilt-series settings files in {warp_dir} disagree:\n  {listed}"
+    chosen = next((s for s in found if s.path.name == "warp_tiltseries.settings"), found[0])
+    if len(found) == 1:
+        return chosen, f"{chosen.path.name} (the only tilt-series settings file in {warp_dir}{note})"
+    return chosen, (
+        f"{chosen.path.name} ({len(found)} tilt-series settings files in {warp_dir}, all with the same tomogram "
+        f"size{note})"
+    )
+
+
+def settings_volume_check(
+    settings: WarpSettings, tomo_dims_xyz: tuple[int, int, int], stack_pixel_size: float, tol_px: float = 2.0
+) -> str | None:
+    """Compare the settings' tomogram size with ``tomo_dims_xyz`` (pixels at ``stack_pixel_size``).
+
+    Returns a warning if any axis differs by more than ``tol_px`` pixels (the settings probably belong to other
+    tomograms), otherwise ``None``.
+    """
+    expected = np.asarray(settings.volume_angstrom) / float(stack_pixel_size)
+    if np.any(np.abs(expected - np.asarray(tomo_dims_xyz, dtype=float)) > tol_px):
+        shown = ", ".join(f"{v:.2f}" for v in expected)
+        return (
+            f"{settings.path.name} gives a tomogram of ({shown}) px at {stack_pixel_size:g} A/px but --tomo_dims_xyz "
+            f"is {tuple(int(v) for v in tomo_dims_xyz)}; check that the settings belong to these tomograms"
+        )
+    return None
+
+
+def settings_record(settings: WarpSettings) -> dict:
+    """Return the ``project.warp_settings`` entry of ``jolt.yaml`` for ``settings`` (path and the values used)."""
+    return {
+        "path": str(Path(settings.path).resolve()),
+        "pixel_size": float(settings.pixel_size),
+        "tomo_dims_xyz": [int(v) for v in settings.tomo_dims_xyz],
+    }
+
+
+def settings_from_record(record: dict) -> WarpSettings:
+    """Return the :class:`WarpSettings` of a ``project.warp_settings`` entry (inverse of :func:`settings_record`)."""
+    return WarpSettings(
+        path=Path(record["path"]),
+        pixel_size=float(record["pixel_size"]),
+        tomo_dims_xyz=tuple(int(v) for v in record["tomo_dims_xyz"]),
+    )
+
+
+def resolve_project_settings(project: dict, override: str | PathLike | None = None) -> tuple[WarpSettings, str, bool]:
+    """WarpTools settings for a JOLT project; returns ``(settings, explanation, new)``.
+
+    ``override`` (a command's ``--warp_settings``) wins; then ``project.warp_settings`` recorded by ``jolt import``;
+    then a search of ``project.warp_dir`` (:func:`find_settings`), for projects imported before JOLT recorded the
+    settings. ``new`` is True when the result is not yet recorded in ``jolt.yaml`` and should be saved.
+
+    Raises
+    ------
+    ValueError
+        If no settings can be found unambiguously; the message says how to provide them.
+    """
+    if override is not None:
+        settings = read_settings(override)
+        recorded = project.get("warp_settings")
+        new = recorded is None or settings_record(settings) != recorded
+        return settings, f"{settings.path} (--warp_settings)", new
+    if project.get("warp_settings"):
+        settings = settings_from_record(project["warp_settings"])
+        return settings, f"{settings.path} (recorded in jolt.yaml)", False
+    settings, why = find_settings(project["warp_dir"])
+    if settings is None:
+        raise ValueError(
+            "the warp output frame needs the WarpTools settings file used for ts_reconstruct / ts_export_particles "
+            f"(its Tomo dimensions and pixel size set the tomogram center), and none was found: {why}. Pass it with "
+            "--warp_settings <file>.settings, or use --output_frame teamtomo"
+        )
+    return settings, f"{why}; not recorded in jolt.yaml before this run", True

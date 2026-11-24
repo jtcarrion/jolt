@@ -32,8 +32,12 @@ The repository includes one tilt series of the CZI DS-10441 synthetic benchmark 
 
    jolt import --warp_dir tests/data/czi_TS_5 --project_dir ts5_demo --tomo_dims_xyz 630,630,200 \
        --picks_2d "warp_tiltseries/tiltstack/{ts}/{ts}_topaz_picks.star"
-   jolt joint_optimize ts5_demo
+   jolt joint_optimize ts5_demo --output_frame teamtomo   # CZI tomograms have TeamTomo's hand
    jolt filter ts5_demo/joint_optimize -o ts5_demo/selected.star --min_fom 0.4
+
+The test case is not a full WarpTools project (it has no ``.settings`` file), so it uses the ``teamtomo`` frame,
+which is also the frame of the CZI portal tomograms. For your own WarpTools projects keep the default ``warp``
+frame (see :doc:`warp`).
 
 ``ts5_demo/joint_optimize/TS_5/`` then holds about 1,200 particles (``TS_5_particles.star``, also as
 ``TS_5_particles.mod`` for ``3dmod``), the refined alignment (``TS_5.xf`` and ``TS_5.tlt``) and
